@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Volvo Service: Parts Tracker</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 1. Library สำหรับอ่านข้อความจากภาพ (OCR) - Tesseract.js -->
+    <script src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'></script>
+    
+    <!-- Import Map -->
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+            "lucide-react": "https://esm.sh/lucide-react@0.344.0"
+        }
+    }
+    </script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Sarabun', sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { height: 8px; width: 8px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #f1f1f1; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #a8a8a8; }
+        
+        @media print {
+            .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            body { background: white; }
+            #root { padding: 0; }
+        }
+        .print-only { display: none; }
+        
+        .fab-hover:hover { transform: scale(1.05); }
+        .fab-active:active { transform: scale(0.95); }
+
+        /* OCR Video Style */
+        .ocr-video-container { position: relative; width: 100%; height: 60vh; background: black; border-radius: 12px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+        .ocr-video { width: 100%; height: 100%; object-fit: cover; }
+        .ocr-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 80%; height: 15vh; border: 2px solid rgba(59, 130, 246, 0.8); border-radius: 8px; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6); pointer-events: none; z-index: 10; }
+        .ocr-guide-text { position: absolute; top: 30%; left: 50%; transform: translateX(-50%); color: white; font-size: 0.9rem; text-shadow: 0 2px 4px rgba(0,0,0,0.8); z-index: 20; white-space: nowrap; }
+    </style>
+</head>
+<body class="bg-gray-100 text-slate-800">
+    <div id="root"></div>
+
+    <!-- Error Display -->
+    <div id="error-display" style="display:none; padding: 20px; background: #fee2e2; color: #991b1b; text-align: center; margin-top: 50px;">
+        <h2 style="font-weight: bold; font-size: 1.5em;">⚠️ เกิดข้อผิดพลาด</h2>
+        <p id="error-text">ระบบไม่สามารถทำงานได้</p>
+        <p style="font-size: 0.9em; margin-top: 10px;">(กรุณาตรวจสอบ Console หรือ API Key)</p>
+    </div>
+
+    <script>
+        window.onerror = function(message, source, lineno, colno, error) {
+            document.getElementById('root').style.display = 'none';
+            document.getElementById('error-display').style.display = 'block';
+            document.getElementById('error-text').innerText = message;
+        };
+    </script>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useRef, memo } from 'react';
+        import ReactDOM from 'react-dom/client';
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getFirestore, collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, query, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { 
+            PlusCircle, Search, Truck, CheckCircle, Phone, Clock, Package, 
+            ArrowRight, Trash2, User, Car, Tag, Edit2, X, Lock, 
+            AlertTriangle, Copy, Bell, Users, Calendar, LayoutDashboard, History, Timer,
+            Store, Wrench, DollarSign, Wallet, Filter, Printer, Banknote, Database, ShoppingCart, TextCursor, Zap, Camera, Eye, EyeOff, ChevronDown, ChevronUp
+        } from 'lucide-react';
+
+        // ==========================================
+        // ⚙️ ตั้งค่าระบบ (Configuration)
+        // ==========================================
+        const AUTO_HIDE_HOURS = 6; 
+
+        // 2. 🛑 ใส่รหัส Firebase ของคุณตรงนี้ 🛑
+        const firebaseConfig = {
+            apiKey:"AIzaSyDKx0owJ6apEAF5mY44C1q3CGY53Nz5uhU",             
+            authDomain:"volvo-parts-tracker.firebaseapp.com",
+            projectId:"volvo-parts-tracker",    
+            storageBucket:"volvo-parts-tracker.firebasestorage.app",
+            messagingSenderId:"747510265490",
+            appId:"1:747510265490:web:0c959f86358f7b56b8184b",
+            measurementId: "G-BER1FQ9WJC"
+        };
+        // ==========================================
+
+        if (firebaseConfig.apiKey === "YOUR_API_KEY") {
+            console.warn("⚠️ Warning: Firebase Config is missing.");
+        }
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        const REQUESTERS = ["PST Q", "PST MAX", "PST ZA", "PST TON", "Trainer A", "Andon O", "SVM", "Counter Sales"];
+        const STATUS_LABELS = { pending: 'รอสั่งซื้อ', ordered: 'สั่งซื้อแล้ว', arrived: 'อะไหล่มาถึง', contacted: 'นัดหมายแล้ว', completed: 'ปิดงาน' };
+        const STATUS_COLORS = { pending: 'bg-gray-100 text-gray-600', ordered: 'bg-yellow-100 text-yellow-800', arrived: 'bg-blue-100 text-blue-800', contacted: 'bg-purple-100 text-purple-800', completed: 'bg-green-100 text-green-800' };
+
+        const POPULAR_PARTS = [
+            { name: "กรองน้ำมันเครื่อง", partNumber: "31372212" },
+            { name: "แหวนรองถ่ายน้ำมัน", partNumber: "977751" },
+            { name: "กรองแอร์ (Cabin)", partNumber: "31407748" },
+            { name: "น้ำยาฉีดกระจก", partNumber: "31422419" },
+            { name: "ผ้าเบรกหน้า", partNumber: "31422419" }
+        ];
+
+        // --- Helper Components ---
+        const formatDate = (dateInput) => { if (!dateInput) return '-'; const date = dateInput.toDate ? dateInput.toDate() : new Date(dateInput); return date.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: '2-digit' }); };
+        const formatDateTime = (dateInput) => { if (!dateInput) return '-'; const date = dateInput.toDate ? dateInput.toDate() : new Date(dateInput); return date.toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: '2-digit', hour: '2-digit', minute:'2-digit' }); };
+        const formatMoney = (amount) => { return amount ? Number(amount).toLocaleString() : '0'; };
+        
+        const PaymentBadge = ({ status, deposit, total }) => {
+            if (status === 'paid') return <span className="text-[10px] font-bold bg-green-100 text-green-700 px-1.5 py-0.5 rounded border border-green-200 flex items-center gap-1"><DollarSign size={10} /> จ่ายครบ</span>;
+            if (status === 'deposit') return <span className="text-[10px] font-bold bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded border border-orange-200 flex items-center gap-1"><Wallet size={10} /> มัดจำ ฿{formatMoney(deposit)}</span>;
+            return total ? <span className="text-[10px] text-gray-400 font-medium">รอจ่าย: ฿{formatMoney(total)}</span> : null;
+        };
+
+        const KanbanCard = memo(({ order, statusKey, onUpdateStatus, onDelete, onEdit, onPrint, onCopy, getVisibility, compactMode }) => {
+            const [expanded, setExpanded] = useState(false);
+            const { isVisible, timeLeft } = getVisibility(order);
+            if (!isVisible) return null;
+            const items = order.items || [];
+            const itemCount = items.length;
+            const displayItems = (expanded || !compactMode && itemCount <= 2) ? items : items.slice(0, 2);
+            const hasMoreItems = itemCount > 2;
+
+            return (
+                <div className={`bg-white p-3 rounded-lg shadow-sm border transition-all duration-200 relative group ${order.isVOR ? 'border-red-400 ring-1 ring-red-100' : 'border-gray-200 hover:shadow-md hover:border-blue-300'}`}>
+                    <div className="absolute -top-2 -right-2 flex gap-1 z-10 pointer-events-none">
+                        {order.isVOR && <div className="bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow flex items-center gap-1 animate-pulse"><AlertTriangle size={10} /> VOR</div>}
+                        {order.orderType === 'store' && <div className="bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow flex items-center gap-1"><Store size={10} /> หน้าร้าน</div>}
+                    </div>
+                    <div className="flex justify-between items-start mb-2">
+                        {order.orderType === 'store' ? <span className="text-xs font-bold text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">Store Order</span> : <span className="text-xs font-bold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded border border-gray-200">JO: {order.jobOrder || '-'}</span>}
+                        <div className="flex gap-1 ml-auto mr-4 md:mr-0 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button onClick={() => onPrint(order)} className="text-gray-400 hover:text-gray-700 p-1 bg-white hover:bg-gray-100 rounded-full border border-transparent hover:border-gray-200" title="พิมพ์"><Printer size={13} /></button>
+                            <button onClick={() => onEdit(order)} className="text-gray-400 hover:text-blue-600 p-1 bg-white hover:bg-blue-50 rounded-full border border-transparent hover:border-blue-100" title="แก้ไข"><Edit2 size={13} /></button>
+                            <button onClick={() => onDelete(order.id)} className="text-gray-400 hover:text-red-600 p-1 bg-white hover:bg-red-50 rounded-full border border-transparent hover:border-red-100" title="ลบ"><Trash2 size={13} /></button>
+                        </div>
+                    </div>
+                    <div className="flex justify-between items-start mb-2">
+                        <div><h4 className="font-bold text-gray-800 text-sm flex items-center gap-1 leading-tight"><User size={13} className="text-blue-600"/> {order.customerName}</h4><div className="text-xs text-gray-500 flex items-center gap-1 mt-0.5 ml-0.5"><Car size={12} className="text-gray-400"/> {order.licensePlate || 'ไม่ระบุทะเบียน'}</div></div>
+                        <button onClick={() => onCopy(`JO: ${order.jobOrder} ลูกค้า: ${order.customerName}`)} className="text-gray-300 hover:text-blue-500 p-1"><Copy size={13} /></button>
+                    </div>
+                    <div className="mb-2"><PaymentBadge status={order.paymentStatus} deposit={order.depositAmount} total={order.totalPrice} /></div>
+                    {!compactMode ? (
+                        <div className={`bg-slate-50 rounded-md p-2 space-y-2 mb-2 border border-slate-100 ${order.isVOR ? 'bg-red-50/30' : ''}`}>
+                            {displayItems.map((item, idx) => (<div key={idx} className="border-b border-gray-200/50 last:border-0 pb-1 last:pb-0"><div className="text-sm font-medium text-gray-700 flex justify-between items-start"><span className="leading-snug">{item.name}</span><span className="text-[10px] text-gray-500 bg-white px-1 rounded border ml-1 whitespace-nowrap">x{item.quantity}</span></div>{item.partNumber && <div className="text-[10px] text-blue-600 font-mono mt-0.5 flex items-center gap-1"><Tag size={9} /> {item.partNumber}</div>}</div>))}
+                            {hasMoreItems && (<button onClick={() => setExpanded(!expanded)} className="w-full text-[10px] font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-200/50 py-1 rounded flex items-center justify-center gap-1 transition-colors mt-1">{expanded ? <><ChevronUp size={10}/> ย่อรายการ</> : <><ChevronDown size={10}/> ดูอีก {itemCount - 2} รายการ</>}</button>)}
+                        </div>
+                    ) : (
+                        <div className="bg-slate-50 rounded px-2 py-1 mb-2 border border-slate-100 flex items-center justify-between text-xs text-slate-600 cursor-pointer hover:bg-slate-100" onClick={() => setExpanded(!expanded)}>
+                            <div className="flex items-center gap-1"><Package size={12}/> <span className="font-bold">{itemCount}</span> รายการ</div>{expanded && <ChevronDown size={10}/>}
+                        </div>
+                    )}
+                    {compactMode && expanded && (<div className="bg-slate-50 rounded-md p-2 space-y-2 mb-2 border border-slate-100 animate-fade-in">{items.map((item, idx) => (<div key={idx} className="border-b border-gray-200/50 last:border-0 pb-1 last:pb-0"><div className="text-xs font-medium text-gray-700 flex justify-between"><span>{item.name}</span><span>x{item.quantity}</span></div></div>))}</div>)}
+                    {order.appointmentDate && <div className="mb-2 bg-green-50 text-green-700 text-[10px] px-2 py-1 rounded border border-green-100 flex items-center gap-1.5 font-bold"><Calendar size={10} /> นัด: {formatDate(order.appointmentDate)}</div>}
+                    <div className="flex justify-between items-center mt-2 border-t pt-2 border-gray-50">
+                        <div className="flex items-center gap-2">{order.requesterName && <div className="text-[9px] text-gray-400 font-medium bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 flex items-center gap-1 uppercase tracking-wide"><Users size={8} /> {order.requesterName}</div>}</div>
+                        {statusKey === 'completed' && timeLeft && (<div className="text-[9px] text-gray-400 flex items-center gap-1"><Timer size={9} /> ซ่อนใน: <span className="text-gray-600 font-medium">{timeLeft}</span></div>)}
+                    </div>
+                    <div className="mt-2 flex justify-end gap-1">
+                        {statusKey !== 'pending' && <button onClick={() => onUpdateStatus(order.id, {completed:'contacted',contacted:'arrived',arrived:'ordered',ordered:'pending'}[statusKey])} className="text-[10px] px-2 py-1 text-gray-400 hover:bg-gray-100 rounded hover:text-gray-600 transition">ย้อนกลับ</button>}
+                        {statusKey !== 'completed' && <button onClick={() => onUpdateStatus(order.id, {pending:'ordered',ordered:'arrived',arrived:'contacted',contacted:'completed'}[statusKey])} className="text-[10px] px-2.5 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1 font-bold shadow-sm transition active:scale-95">ไปต่อ <ArrowRight size={10} /></button>}
+                    </div>
+                </div>
+            );
+        });
+
+        function PartsTrackerApp() {
+            const [user, setUser] = useState(null);
+            const [orders, setOrders] = useState([]);
+            const [catalog, setCatalog] = useState([]); 
+            const [loading, setLoading] = useState(true);
+            const [searchTerm, setSearchTerm] = useState('');
+            const [notifications, setNotifications] = useState([]);
+            const [currentTab, setCurrentTab] = useState('dashboard');
+            const [filterType, setFilterType] = useState('all'); 
+            const [compactMode, setCompactMode] = useState(false);
+            const [currentTime, setCurrentTime] = useState(Date.now()); 
+            const isFirstLoad = useRef(true);
+
+            // Form States
+            const [showForm, setShowForm] = useState(false);
+            const [isEditing, setIsEditing] = useState(false);
+            const [currentOrderId, setCurrentOrderId] = useState(null);
+            const [editingStatus, setEditingStatus] = useState('pending');
+            const [formData, setFormData] = useState({ customerName: '', licensePlate: '', contactNumber: '', jobOrder: '', requesterName: '', appointmentDate: '', isVOR: false, items: [], orderType: 'job', paymentStatus: 'unpaid', totalPrice: '', depositAmount: '' });
+            const [tempItem, setTempItem] = useState({ name: '', partNumber: '', quantity: 1 });
+
+            // Catalog & Print States
+            const [showCatalogForm, setShowCatalogForm] = useState(false);
+            const [catalogFormData, setCatalogFormData] = useState({ partNumber: '', name: '', price: '', category: '' });
+            const [printOrder, setPrintOrder] = useState(null);
+
+            // Scanner States (Only OCR now)
+            const [showScanner, setShowScanner] = useState(false);
+            const [scannerMode, setScannerMode] = useState('input');
+            const [ocrProcessing, setOcrProcessing] = useState(false);
+            
+            // Refs
+            const streamRef = useRef(null); // For Camera Stream (Global management)
+            const videoRef = useRef(null); // For OCR Video Element
+
+            useEffect(() => { const timer = setInterval(() => setCurrentTime(Date.now()), 30000); return () => clearInterval(timer); }, []);
+            useEffect(() => { if (firebaseConfig.apiKey === "YOUR_API_KEY") { setLoading(false); return; } signInAnonymously(auth).catch((error) => console.error("Login Failed:", error)); return onAuthStateChanged(auth, setUser); }, []);
+
+            useEffect(() => {
+                if (!user) return;
+                const qOrders = query(collection(db, 'parts_orders')); 
+                const unsubscribeOrders = onSnapshot(qOrders, (snapshot) => {
+                    const ordersData = snapshot.docs.map(doc => { const data = doc.data(); if (!data.items && data.partName) data.items = [{ name: data.partName, partNumber: data.partNumber || '', quantity: 1 }]; return { id: doc.id, ...data }; });
+                    ordersData.sort((a, b) => (a.isVOR !== b.isVOR ? (a.isVOR ? -1 : 1) : (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
+                    setOrders(ordersData); setLoading(false);
+                    if (!isFirstLoad.current) snapshot.docChanges().forEach((change) => { const data = change.doc.data(); if (change.type === 'added') addNotification(`เปิดงานใหม่: ${data.customerName}`, 'new'); if (change.type === 'modified') addNotification(`อัปเดต: ${data.customerName} -> ${STATUS_LABELS[data.status] || data.status}`, 'update'); });
+                    isFirstLoad.current = false;
+                });
+                const qCatalog = query(collection(db, 'parts_catalog'));
+                const unsubscribeCatalog = onSnapshot(qCatalog, (snapshot) => { const catalogData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })); catalogData.sort((a, b) => a.name.localeCompare(b.name)); setCatalog(catalogData); });
+                return () => { unsubscribeOrders(); unsubscribeCatalog(); };
+            }, [user]);
+
+            // --- CAMERA MANAGEMENT SYSTEM ---
+            const stopAllCameras = () => {
+                if (streamRef.current) {
+                    streamRef.current.getTracks().forEach(track => track.stop());
+                    streamRef.current = null;
+                }
+            };
+
+            // Effect to handle Scanner Logic lifecycle
+            useEffect(() => {
+                if (showScanner) {
+                    stopAllCameras(); // Start fresh
+                    
+                    // Always start OCR camera
+                    navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+                        .then(stream => {
+                            streamRef.current = stream; // Store globally
+                            if (videoRef.current) {
+                                videoRef.current.srcObject = stream;
+                            }
+                        })
+                        .catch(err => {
+                            console.error("Camera Error:", err);
+                            addNotification("ไม่สามารถเปิดกล้องได้ (กรุณาอนุญาตการเข้าถึง)", "error");
+                            setShowScanner(false);
+                        });
+                } else {
+                    stopAllCameras();
+                }
+
+                // Cleanup on unmount or change
+                return () => stopAllCameras();
+            }, [showScanner]);
+
+            const processScanResult = async (text) => {
+                const cleanText = text.replace(/[^a-zA-Z0-9]/g, ''); // Clean special chars
+                
+                if (cleanText.length < 3) return; // Ignore too short nonsense
+
+                if (scannerMode === 'input') { 
+                    setTempItem(prev => ({ ...prev, partNumber: cleanText })); 
+                    setShowScanner(false); 
+                    addNotification(`รับข้อมูล: ${cleanText}`, 'info'); 
+                } else if (scannerMode === 'receive') {
+                    // Fuzzy matching
+                    const targetOrder = orders.find(o => o.status === 'ordered' && o.items.some(i => {
+                        const itemPN = (i.partNumber || '').replace(/[^a-zA-Z0-9]/g, '');
+                        return itemPN === cleanText || itemPN.includes(cleanText) || cleanText.includes(itemPN);
+                    }));
+
+                    if (targetOrder) { 
+                        await updateStatus(targetOrder.id, 'arrived'); 
+                        addNotification(`✅ รับของสำเร็จ! JO: ${targetOrder.jobOrder}`, 'success'); 
+                        // Note: Don't close scanner in receive mode to allow rapid scanning
+                    } else { 
+                        const alreadyArrived = orders.find(o => o.status === 'arrived' && o.items.some(i => (i.partNumber || '').replace(/[^a-zA-Z0-9]/g, '').includes(cleanText)));
+                        if(alreadyArrived) addNotification(`⚠️ รายการนี้รับไปแล้ว (JO: ${alreadyArrived.jobOrder})`, 'warning');
+                        else addNotification(`❌ ไม่พบข้อมูลสั่งซื้อ: ${cleanText}`, 'error');
+                    }
+                }
+            };
+
+            const handleOcrCapture = async () => {
+                if (!videoRef.current) return;
+                setOcrProcessing(true);
+                const canvas = document.createElement('canvas');
+                canvas.width = videoRef.current.videoWidth;
+                canvas.height = videoRef.current.videoHeight;
+                // Crop center area (heuristic based on overlay CSS)
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+                
+                try {
+                    const result = await Tesseract.recognize(canvas, 'eng');
+                    const text = result.data.text;
+                    // Regex: Look for 7-8 digits sequence
+                    const numbers = text.match(/\b\d[\d\s-]{5,}\d\b/g); 
+                    
+                    if (numbers && numbers.length > 0) {
+                        const bestMatch = numbers.reduce((a, b) => a.replace(/\s/g,'').length > b.replace(/\s/g,'').length ? a : b);
+                        const cleanPN = bestMatch.replace(/[^0-9]/g, '');
+                        processScanResult(cleanPN);
+                    } else {
+                        addNotification("ไม่พบตัวเลขที่ชัดเจน ลองขยับกล้อง", "warning");
+                    }
+                } catch (err) {
+                    console.error(err);
+                    addNotification("อ่านภาพไม่สำเร็จ", "error");
+                }
+                setOcrProcessing(false);
+            };
+
+            const startScanner = (mode) => { setScannerMode(mode); setShowScanner(true); };
+            const closeScanner = () => { setShowScanner(false); stopAllCameras(); };
+
+            // ... (Rest of CRUD Actions are same as before) ...
+            const addNotification = (message, type) => { const id = Date.now(); setNotifications(prev => [...prev, { id, message, type }]); setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 5000); };
+            const copyToClipboard = (text) => { navigator.clipboard.writeText(text); addNotification("คัดลอกข้อมูลแล้ว", "info"); };
+            const resetForm = () => { setFormData({ customerName: '', licensePlate: '', contactNumber: '', jobOrder: '', requesterName: '', appointmentDate: '', isVOR: false, items: [], orderType: 'job', paymentStatus: 'unpaid', totalPrice: '', depositAmount: '' }); setTempItem({ name: '', partNumber: '', quantity: 1 }); setIsEditing(false); setEditingStatus('pending'); setCurrentOrderId(null); };
+            const openAddModal = (initialItem = null) => { resetForm(); if (initialItem) { setFormData(prev => ({ ...prev, items: [{ name: initialItem.name, partNumber: initialItem.partNumber, quantity: 1 }] })); } setShowForm(true); };
+            const openEditModal = (order) => { setFormData({ ...order, items: order.items || [], orderType: order.orderType || 'job', paymentStatus: order.paymentStatus || 'unpaid', totalPrice: order.totalPrice || '', depositAmount: order.depositAmount || '' }); setIsEditing(true); setEditingStatus(order.status || 'pending'); setCurrentOrderId(order.id); setShowForm(true); };
+            const handleAddItem = () => { if (!tempItem.name) return; setFormData(prev => ({ ...prev, items: [...prev.items, tempItem] })); setTempItem({ name: '', partNumber: '', quantity: 1 }); };
+            const handleCatalogSelect = (e) => { const val = e.target.value; const found = catalog.find(c => c.partNumber === val || c.name === val); if (found) { setTempItem({ ...tempItem, name: found.name, partNumber: found.partNumber }); } else { setTempItem({ ...tempItem, [e.target.name]: val }); } };
+            const handleQuickAdd = (part) => { setFormData(prev => ({ ...prev, items: [...prev.items, { name: part.name, partNumber: part.partNumber, quantity: 1 }] })); };
+            const handleSubmit = async (e) => { e.preventDefault(); if (formData.items.length === 0) return alert("กรุณาเพิ่มรายการอะไหล่"); try { if (isEditing) await updateDoc(doc(db, 'parts_orders', currentOrderId), { ...formData }); else await addDoc(collection(db, 'parts_orders'), { ...formData, status: 'pending', createdAt: serverTimestamp(), createdBy: user.uid }); setShowForm(false); resetForm(); } catch (err) { console.error(err); alert("บันทึกไม่สำเร็จ: " + err.message); } };
+            const updateStatus = async (id, status) => { const updateData = { status }; if (status === 'completed') { updateData.completedAt = serverTimestamp(); } await updateDoc(doc(db, 'parts_orders', id), updateData); };
+            const deleteOrder = async (id) => { if(confirm("ลบรายการนี้?")) await deleteDoc(doc(db, 'parts_orders', id)); };
+            const handleAddCatalogItem = async () => { if (!catalogFormData.name || !catalogFormData.partNumber) return alert("ใส่ชื่อและ P/N ให้ครบ"); await addDoc(collection(db, 'parts_catalog'), { ...catalogFormData, createdAt: serverTimestamp() }); setCatalogFormData({ partNumber: '', name: '', price: '', category: '' }); setShowCatalogForm(false); };
+            const deleteCatalogItem = async (id) => { if(confirm("ลบรายการนี้จากคลัง?")) await deleteDoc(doc(db, 'parts_catalog', id)); };
+            const handlePrint = (order) => { setPrintOrder(order); setTimeout(() => window.print(), 300); };
+            const getOrderVisibilityData = (order) => { if (order.status !== 'completed') return { isVisible: true }; if (order.completedAt === undefined) return { isVisible: false }; if (order.completedAt === null) return { isVisible: true, timeLeft: 'กำลังบันทึก...' }; const completedTime = order.completedAt.toDate().getTime(); const diffMs = currentTime - completedTime; const hoursPassed = diffMs / (1000 * 60 * 60); if (hoursPassed >= AUTO_HIDE_HOURS) return { isVisible: false }; const hoursLeft = Math.floor(AUTO_HIDE_HOURS - hoursPassed); const minutesLeft = Math.floor(((AUTO_HIDE_HOURS - hoursPassed) * 60) % 60); return { isVisible: true, timeLeft: `${hoursLeft > 0 ? hoursLeft + ' ชม. ' : ''}${minutesLeft} นาที` }; };
+
+            const filteredOrders = orders.filter(o => { 
+                const searchLower = searchTerm.toLowerCase();
+                const matchesSearch = (o.customerName || '').toLowerCase().includes(searchLower) || (o.licensePlate || '').toLowerCase().includes(searchLower) || (o.jobOrder || '').toLowerCase().includes(searchLower) || (o.requesterName && o.requesterName.toLowerCase().includes(searchLower)) || (o.items && o.items.some(item => (item.partNumber || '').toLowerCase().includes(searchLower))); 
+                const matchesFilter = filterType === 'all' ? true : filterType === 'vor' ? o.isVOR : o.orderType === filterType; 
+                return matchesSearch && matchesFilter; 
+            });
+            const filteredCatalog = catalog.filter(c => (c.name || '').toLowerCase().includes(searchTerm.toLowerCase()) || (c.partNumber || '').toLowerCase().includes(searchTerm.toLowerCase()));
+            const stats = { totalActive: orders.filter(o => o.status !== 'completed').length, totalVOR: orders.filter(o => o.isVOR && o.status !== 'completed').length, totalUnpaid: orders.filter(o => o.paymentStatus !== 'paid' && o.status !== 'completed').reduce((sum, o) => { const total = parseFloat(o.totalPrice) || 0; const deposit = parseFloat(o.depositAmount) || 0; return sum + (total - deposit); }, 0) };
+
+            const KanbanColumn = ({ title, statusKey, items, icon: Icon, colorClass }) => (
+                <div className="flex flex-col bg-gray-50 rounded-lg w-full md:w-[350px] md:min-w-[300px] md:h-full shrink-0 max-h-[500px] md:max-h-none shadow-sm">
+                    <div className={`p-3 rounded-t-lg font-bold text-sm flex items-center justify-between ${colorClass} text-white sticky top-0 z-10 shadow-sm`}>
+                        <div className="flex items-center gap-2"><Icon size={18} />{title}</div><span className="bg-white/20 px-2 py-0.5 rounded text-xs backdrop-blur-sm">{items.length}</span>
+                    </div>
+                    <div className="p-2 overflow-y-auto flex-1 space-y-3 md:pb-20 min-h-[100px] custom-scrollbar">
+                        {items.length === 0 ? <div className="text-center text-gray-300 text-xs mt-8 flex flex-col items-center"><Package size={24} className="mb-2 opacity-50"/>ไม่มีรายการ</div> : items.map(order => (
+                            <KanbanCard key={order.id} order={order} statusKey={statusKey} onUpdateStatus={updateStatus} onDelete={deleteOrder} onEdit={openEditModal} onPrint={handlePrint} onCopy={copyToClipboard} getVisibility={getOrderVisibilityData} compactMode={compactMode} />
+                        ))}
+                    </div>
+                </div>
+            );
+
+            return (
+                <div className="min-h-screen relative flex flex-col bg-gray-100">
+                    <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 pointer-events-none no-print">{notifications.map(n => (<div key={n.id} className={`pointer-events-auto min-w-[280px] p-4 rounded-lg shadow-lg flex items-center gap-3 animate-bounce ${n.type==='new'?'bg-blue-600 text-white':'bg-gray-800 text-white'}`}><Bell size={20} /> <div className="text-sm font-medium">{n.message}</div></div>))}</div>
+                    <header className="bg-slate-900 text-white p-4 shadow-md sticky top-0 z-50 no-print">
+                        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+                            <div className="flex items-center gap-4 w-full md:w-auto"><div className="flex items-center gap-3"><div className="bg-blue-600 p-2 rounded-full shrink-0"><Truck size={24} className="text-white" /></div><div><h1 className="text-xl font-bold leading-tight">Volvo Service</h1><p className="text-xs text-gray-400">Parts Tracker</p></div></div><div className="hidden md:flex ml-8 bg-slate-800 rounded-lg p-1"><button onClick={() => setCurrentTab('dashboard')} className={`px-4 py-1.5 rounded-md text-sm font-medium flex items-center gap-2 transition-all ${currentTab==='dashboard' ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}><LayoutDashboard size={16}/> กระดานงาน</button><button onClick={() => setCurrentTab('history')} className={`px-4 py-1.5 rounded-md text-sm font-medium flex items-center gap-2 transition-all ${currentTab==='history' ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}><History size={16}/> ประวัติทั้งหมด</button><button onClick={() => setCurrentTab('catalog')} className={`px-4 py-1.5 rounded-md text-sm font-medium flex items-center gap-2 transition-all ${currentTab==='catalog' ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}><Database size={16}/> คลังอะไหล่</button></div></div>
+                            <div className="flex gap-2 w-full md:w-auto items-center"><button onClick={() => startScanner('receive')} className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-bold shadow-md transition-colors whitespace-nowrap"><Camera size={18} /> <span className="hidden sm:inline">สแกนรับของเข้า</span></button><div className="relative flex-1 md:w-64"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} /><input type="text" placeholder="ค้นหา JO, ทะเบียน, ลูกค้า, P/N..." className="w-full pl-10 pr-4 py-2 rounded-lg bg-slate-800 border-slate-700 text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:outline-none" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div></div>
+                        </div>
+                        <div className="md:hidden flex mt-3 border-t border-slate-700 pt-3"><button onClick={() => setCurrentTab('dashboard')} className={`flex-1 text-center py-1 text-sm font-medium border-b-2 ${currentTab==='dashboard' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400'}`}>Dashboard</button><button onClick={() => setCurrentTab('history')} className={`flex-1 text-center py-1 text-sm font-medium border-b-2 ${currentTab==='history' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400'}`}>History</button><button onClick={() => setCurrentTab('catalog')} className={`flex-1 text-center py-1 text-sm font-medium border-b-2 ${currentTab==='catalog' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400'}`}>Catalog</button></div>
+                    </header>
+                    <main className="flex-1 p-4 md:h-[calc(100vh-80px)] overflow-hidden no-print">
+                        {loading ? <div className="flex justify-center items-center h-64 text-gray-400 gap-2"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div> กำลังโหลดข้อมูล...</div> : 
+                        <div className="h-full flex flex-col">
+                            {currentTab === 'dashboard' && (
+                                <div className="mb-4 flex flex-col lg:flex-row gap-4 shrink-0">
+                                    <div className="flex gap-2 overflow-x-auto pb-1"><div className="bg-white p-3 rounded-lg shadow-sm border border-gray-100 flex items-center gap-3 min-w-[140px]"><div className="bg-blue-100 p-2 rounded-full text-blue-600"><Package size={20}/></div><div><div className="text-2xl font-bold text-gray-800">{stats.totalActive}</div><div className="text-[10px] text-gray-500 uppercase">งานที่ทำอยู่</div></div></div><div className="bg-white p-3 rounded-lg shadow-sm border border-gray-100 flex items-center gap-3 min-w-[140px]"><div className="bg-red-100 p-2 rounded-full text-red-600"><AlertTriangle size={20}/></div><div><div className="text-2xl font-bold text-gray-800">{stats.totalVOR}</div><div className="text-[10px] text-gray-500 uppercase">งานด่วน VOR</div></div></div><div className="bg-white p-3 rounded-lg shadow-sm border border-gray-100 flex items-center gap-3 min-w-[180px]"><div className="bg-orange-100 p-2 rounded-full text-orange-600"><Banknote size={20}/></div><div><div className="text-lg font-bold text-gray-800">฿{formatMoney(stats.totalUnpaid)}</div><div className="text-[10px] text-gray-500 uppercase">รอเก็บเงิน</div></div></div></div>
+                                    <div className="flex-1 flex items-center justify-end gap-2 overflow-x-auto"><span className="text-xs text-gray-400 font-bold uppercase hidden md:inline"><Filter size={12} className="inline mr-1"/> กรองข้อมูล:</span><button onClick={() => setFilterType('all')} className={`px-3 py-1.5 rounded-full text-xs font-bold transition whitespace-nowrap ${filterType==='all' ? 'bg-gray-800 text-white shadow' : 'bg-white text-gray-500 border hover:bg-gray-50'}`}>ทั้งหมด</button><button onClick={() => setFilterType('job')} className={`px-3 py-1.5 rounded-full text-xs font-bold transition whitespace-nowrap ${filterType==='job' ? 'bg-blue-600 text-white shadow' : 'bg-white text-gray-500 border hover:bg-gray-50'}`}>งานซ่อม (Job)</button><button onClick={() => setFilterType('store')} className={`px-3 py-1.5 rounded-full text-xs font-bold transition whitespace-nowrap ${filterType==='store' ? 'bg-indigo-600 text-white shadow' : 'bg-white text-gray-500 border hover:bg-gray-50'}`}>หน้าร้าน (Store)</button><button onClick={() => setFilterType('vor')} className={`px-3 py-1.5 rounded-full text-xs font-bold transition whitespace-nowrap ${filterType==='vor' ? 'bg-red-600 text-white shadow' : 'bg-white text-gray-500 border hover:bg-gray-50'}`}>งานด่วน VOR</button><div className="w-px h-6 bg-gray-300 mx-1"></div><button onClick={() => setCompactMode(!compactMode)} className={`p-1.5 rounded-full transition ${compactMode ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-400 hover:text-gray-600'}`} title={compactMode ? "แสดงรายละเอียด" : "ย่อรายการ"}>{compactMode ? <EyeOff size={16}/> : <Eye size={16}/>}</button></div>
+                                </div>
+                            )}
+                            {currentTab === 'dashboard' && (<div className="flex flex-col md:flex-row gap-4 h-full md:overflow-x-auto pb-20 md:pb-4 items-start overflow-y-auto"><KanbanColumn title="รอสั่งซื้อ" statusKey="pending" items={filteredOrders.filter(o => o.status === 'pending')} icon={Clock} colorClass="bg-slate-600" /><KanbanColumn title="สั่งซื้อแล้ว" statusKey="ordered" items={filteredOrders.filter(o => o.status === 'ordered')} icon={Package} colorClass="bg-yellow-600" /><KanbanColumn title="อะไหล่มาถึง" statusKey="arrived" items={filteredOrders.filter(o => o.status === 'arrived')} icon={Truck} colorClass="bg-blue-600" /><KanbanColumn title="นัดหมายแล้ว" statusKey="contacted" items={filteredOrders.filter(o => o.status === 'contacted')} icon={Phone} colorClass="bg-purple-600" /><KanbanColumn title="ติดตั้ง/ปิดงาน" statusKey="completed" items={filteredOrders.filter(o => o.status === 'completed')} icon={CheckCircle} colorClass="bg-green-600" /></div>)}
+                            {currentTab === 'history' && (<div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden flex flex-col h-full animate-fade-in"><div className="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center"><h3 className="font-bold text-gray-800 flex items-center gap-2"><History size={20} className="text-blue-600"/> ประวัติการสั่งซื้อและรับบริการทั้งหมด</h3><span className="text-xs text-gray-500">พบ {filteredOrders.length} รายการ</span></div><div className="overflow-auto flex-1 custom-scrollbar"><table className="w-full text-left border-collapse"><thead className="bg-white text-gray-600 text-xs uppercase tracking-wider sticky top-0 shadow-sm z-10"><tr><th className="p-4 font-semibold border-b">วันที่เปิดงาน</th><th className="p-4 font-semibold border-b">ข้อมูลลูกค้า</th><th className="p-4 font-semibold border-b w-1/4">รายการอะไหล่</th><th className="p-4 font-semibold border-b text-center">ประเภท</th><th className="p-4 font-semibold border-b text-center">สถานะ</th><th className="p-4 font-semibold border-b text-center">การชำระเงิน</th><th className="p-4 font-semibold border-b text-center">จัดการ</th></tr></thead><tbody className="divide-y divide-gray-100 text-sm">{filteredOrders.length > 0 ? filteredOrders.map(order => (<tr key={order.id} className="hover:bg-blue-50/30 transition group"><td className="p-4 whitespace-nowrap text-gray-500 align-top"><div className="font-medium">{formatDate(order.createdAt)}</div><div className="text-xs text-gray-400">{(formatDateTime(order.createdAt).split(' ')[1] || '')}</div>{order.isVOR && <span className="mt-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-600">VOR</span>}</td><td className="p-4 align-top"><div className="font-bold text-gray-900">{order.customerName}</div><div className="text-xs text-gray-500">{order.licensePlate || 'ไม่ระบุทะเบียน'}</div>{order.orderType === 'job' && <div className="text-xs font-mono text-blue-600 mt-1">JO: {order.jobOrder}</div>}</td><td className="p-4 align-top"><div className="space-y-1">{(order.items || []).map((item, i) => (<div key={i} className="flex justify-between items-start text-xs border-b border-dashed border-gray-200 last:border-0 pb-1 last:pb-0"><div><span className="text-gray-700 font-medium">{item.name}</span>{item.partNumber && <span className="block text-gray-400 text-[10px] font-mono">{item.partNumber}</span>}</div><span className="bg-gray-100 text-gray-600 px-1.5 rounded ml-2 whitespace-nowrap">x{item.quantity}</span></div>))}</div></td><td className="p-4 align-top text-center">{order.orderType === 'store' ? <span className="text-[10px] font-bold bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full">หน้าร้าน</span> : <span className="text-[10px] font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-full">งานซ่อม</span>}</td><td className="p-4 align-top text-center"><span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[order.status] || 'bg-gray-100 text-gray-800'}`}>{STATUS_LABELS[order.status] || order.status}</span></td><td className="p-4 align-top text-center"><div className="flex flex-col items-center gap-1"><PaymentBadge status={order.paymentStatus} deposit={order.depositAmount} total={order.totalPrice} />{order.totalPrice && <div className="text-[10px] text-gray-400">รวม: {formatMoney(order.totalPrice)}</div>}</div></td><td className="p-4 align-top text-center"><div className="flex justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={() => openEditModal(order)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded"><Edit2 size={14}/></button><button onClick={() => deleteOrder(order.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"><Trash2 size={14}/></button></div></td></tr>)) : (<tr><td colSpan="7" className="p-12 text-center text-gray-400"><div className="flex flex-col items-center gap-2"><Search size={32} className="opacity-20"/><span>ไม่พบประวัติการสั่งซื้อที่ค้นหา</span></div></td></tr>)}</tbody></table></div></div>)}
+                            {currentTab === 'catalog' && (<div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden flex flex-col h-full animate-fade-in"><div className="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center"><div><h3 className="font-bold text-gray-800 flex items-center gap-2"><Database size={20} className="text-blue-600"/> คลังอะไหล่ (Parts Catalog)</h3><p className="text-xs text-gray-500">จัดการข้อมูลอะไหล่เพื่อการสั่งซื้อที่รวดเร็ว</p></div><button onClick={() => setShowCatalogForm(true)} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg flex items-center gap-2 text-sm font-bold shadow transition-colors"><PlusCircle size={16} /> เพิ่มอะไหล่ใหม่</button></div><div className="overflow-auto flex-1 custom-scrollbar"><table className="w-full text-left border-collapse"><thead className="bg-white text-gray-600 text-xs uppercase tracking-wider sticky top-0 shadow-sm z-10"><tr><th className="p-4 font-semibold border-b">P/N (รหัสอะไหล่)</th><th className="p-4 font-semibold border-b">ชื่ออะไหล่</th><th className="p-4 font-semibold border-b">ราคา (ประมาณ)</th><th className="p-4 font-semibold border-b text-center">สั่งทันที</th><th className="p-4 font-semibold border-b text-center">จัดการ</th></tr></thead><tbody className="divide-y divide-gray-100 text-sm">{filteredCatalog.length > 0 ? filteredCatalog.map(item => (<tr key={item.id} className="hover:bg-blue-50/30 transition group"><td className="p-4 font-mono text-blue-600 font-medium">{item.partNumber}</td><td className="p-4 font-bold text-gray-800">{item.name} <div className="text-xs text-gray-400 font-normal">{item.category}</div></td><td className="p-4 text-gray-600">{item.price ? `฿${formatMoney(item.price)}` : '-'}</td><td className="p-4 text-center"><button onClick={() => { setCurrentTab('dashboard'); openAddModal(item); }} className="bg-green-100 hover:bg-green-200 text-green-700 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1 mx-auto transition"><ShoppingCart size={14}/> สั่งเลย</button></td><td className="p-4 text-center"><button onClick={() => deleteCatalogItem(item.id)} className="text-gray-300 hover:text-red-500 p-1"><Trash2 size={16}/></button></td></tr>)) : (<tr><td colSpan="5" className="p-12 text-center text-gray-400"><div className="flex flex-col items-center gap-2"><Database size={32} className="opacity-20"/><span>ไม่พบข้อมูลอะไหล่</span></div></td></tr>)}</tbody></table></div></div>)}
+                        </div>
+                        }
+                    </main>
+
+                    {/* Floating Action Button */}
+                    <button onClick={() => openAddModal()} className="fixed bottom-6 right-6 bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-full shadow-xl flex items-center justify-center transition-all duration-300 z-50 fab-hover fab-active group no-print"><PlusCircle size={32} className="group-hover:rotate-90 transition-transform duration-300"/><span className="absolute -top-10 right-0 bg-gray-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">สั่งอะไหล่ใหม่</span></button>
+
+                    {/* Print Template, Catalog Modal (Same as before) */}
+                    {printOrder && (<div className="print-only p-8 text-black"><div className="flex justify-between items-start mb-6 border-b pb-4"><div className="flex items-center gap-2"><div className="text-4xl text-blue-600"><Truck size={40}/></div><div><h1 className="text-2xl font-bold">ใบสั่งอะไหล่ / Parts Order</h1><p className="text-sm text-gray-500">Volvo Service Center</p></div></div><div className="text-right"><div className="font-bold text-xl">{printOrder.orderType === 'store' ? 'STORE ORDER' : 'JOB ORDER'}</div><div className="text-sm text-gray-500">{formatDate(printOrder.createdAt)}</div></div></div><div className="grid grid-cols-2 gap-8 mb-6"><div><h3 className="font-bold border-b mb-2">ข้อมูลลูกค้า (Customer)</h3><p><strong>ชื่อ:</strong> {printOrder.customerName}</p><p><strong>เบอร์โทร:</strong> {printOrder.contactNumber}</p>{printOrder.orderType === 'job' && <p><strong>ทะเบียน:</strong> {printOrder.licensePlate}</p>}</div><div><h3 className="font-bold border-b mb-2">ข้อมูลงาน (Job Details)</h3>{printOrder.orderType === 'job' && <p><strong>Job Order:</strong> {printOrder.jobOrder}</p>}<p><strong>ผู้สั่ง:</strong> {printOrder.requesterName}</p>{printOrder.isVOR && <p className="text-red-600 font-bold">** งานด่วน VOR **</p>}</div></div><div className="mb-6"><h3 className="font-bold border-b mb-2">รายการอะไหล่ (Items)</h3><table className="w-full text-left"><thead><tr className="border-b"><th className="py-2">ลำดับ</th><th className="py-2">รายการ</th><th className="py-2">P/N</th><th className="py-2 text-right">จำนวน</th></tr></thead><tbody>{printOrder.items.map((item, i) => (<tr key={i} className="border-b"><td className="py-2">{i+1}</td><td className="py-2">{item.name}</td><td className="py-2">{item.partNumber || '-'}</td><td className="py-2 text-right">{item.quantity}</td></tr>))}</tbody></table></div><div className="flex justify-end mt-8 border-t pt-4"><div className="text-right"><p>ลงชื่อผู้รับของ .......................................................</p><p className="mt-2 text-sm text-gray-500">วันที่ .......................................................</p></div></div></div>)}
+                    {showCatalogForm && (<div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4 no-print"><div className="bg-white rounded-xl shadow-2xl w-full max-w-sm flex flex-col"><div className="bg-blue-900 p-4 rounded-t-xl"><h3 className="text-lg font-bold text-white">เพิ่มอะไหล่เข้าคลัง</h3></div><div className="p-4 space-y-3"><div><label className="text-sm font-semibold block mb-1">รหัสอะไหล่ (P/N)</label><input className="w-full border p-2 rounded" placeholder="เช่น 31422419" value={catalogFormData.partNumber} onChange={e=>setCatalogFormData({...catalogFormData, partNumber: e.target.value})} /></div><div><label className="text-sm font-semibold block mb-1">ชื่ออะไหล่</label><input className="w-full border p-2 rounded" placeholder="เช่น ผ้าเบรกหน้า XC60" value={catalogFormData.name} onChange={e=>setCatalogFormData({...catalogFormData, name: e.target.value})} /></div><div><label className="text-sm font-semibold block mb-1">หมวดหมู่/รุ่นรถ</label><input className="w-full border p-2 rounded" placeholder="เช่น ช่วงล่าง / XC90" value={catalogFormData.category} onChange={e=>setCatalogFormData({...catalogFormData, category: e.target.value})} /></div><div><label className="text-sm font-semibold block mb-1">ราคาโดยประมาณ (บาท)</label><input type="number" className="w-full border p-2 rounded" placeholder="0.00" value={catalogFormData.price} onChange={e=>setCatalogFormData({...catalogFormData, price: e.target.value})} /></div></div><div className="p-4 border-t flex gap-3"><button onClick={() => setShowCatalogForm(false)} className="flex-1 border p-2 rounded text-gray-600 hover:bg-gray-50">ยกเลิก</button><button onClick={handleAddCatalogItem} className="flex-1 bg-blue-600 text-white p-2 rounded hover:bg-blue-700 font-bold">บันทึก</button></div></div></div>)}
+                    {/* Order Modal (Same as before) */}
+                    {showForm && (
+                        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4 no-print">
+                            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh] animate-fade-in">
+                                <div className="bg-slate-900 p-4 flex justify-between items-center shrink-0"><h3 className="text-lg font-bold text-white flex items-center gap-2">{isEditing?'แก้ไขรายการ':'ใบสั่งอะไหล่ใหม่'}</h3><button onClick={() => setShowForm(false)} className="text-gray-400 hover:text-white">✕</button></div>
+                                <div className="p-4 overflow-y-auto space-y-4 custom-scrollbar">
+                                    <div className="flex bg-gray-100 p-1 rounded-lg mb-4">
+                                        <button onClick={() => setFormData({...formData, orderType: 'job'})} className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-md text-sm font-bold transition ${formData.orderType==='job'?'bg-white text-blue-600 shadow':'text-gray-500'}`}><Wrench size={16}/> งานซ่อม (Job)</button>
+                                        <button onClick={() => setFormData({...formData, orderType: 'store'})} className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-md text-sm font-bold transition ${formData.orderType==='store'?'bg-white text-indigo-600 shadow':'text-gray-500'}`}><Store size={16}/> หน้าร้าน (Store)</button>
+                                    </div>
+                                    <div className="flex items-center gap-2 bg-red-50 p-3 rounded-lg border border-red-100 cursor-pointer hover:bg-red-100 transition mb-4" onClick={() => setFormData({...formData, isVOR: !formData.isVOR})}>
+                                        <div className={`w-5 h-5 rounded border flex items-center justify-center transition ${formData.isVOR ? 'bg-red-600 border-red-600' : 'bg-white border-gray-300'}`}>{formData.isVOR && <CheckCircle size={14} className="text-white" />}</div>
+                                        <span className="text-sm font-bold text-red-700 flex items-center gap-1"><AlertTriangle size={16} /> งานด่วน VOR (รถจอดรอ)</span>
+                                    </div>
+                                    <div><label className="text-sm font-semibold text-gray-700 block mb-1">ผู้เบิก/สั่งอะไหล่ <span className="text-red-500">*</span></label><select className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" value={formData.requesterName} onChange={e=>setFormData({...formData,requesterName:e.target.value})}><option value="">-- เลือกชื่อ --</option>{REQUESTERS.map(n=><option key={n} value={n}>{n}</option>)}</select></div>
+                                    {formData.orderType === 'job' && (<div className="grid grid-cols-2 gap-3 mt-3"><div><label className="text-sm font-semibold text-gray-700 block mb-1">Job Order (JO)</label><input className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" placeholder="เช่น 12345" value={formData.jobOrder} onChange={e=>setFormData({...formData,jobOrder:e.target.value})} /></div><div><label className="text-sm font-semibold text-gray-700 block mb-1">ทะเบียนรถ</label><input className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" placeholder="เช่น 1กข 9999" value={formData.licensePlate} onChange={e=>setFormData({...formData,licensePlate:e.target.value})} /></div></div>)}
+                                    <div className="grid grid-cols-2 gap-3 mt-3"><div><label className="text-sm font-semibold text-gray-700 block mb-1">ชื่อลูกค้า</label><input className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" value={formData.customerName} onChange={e=>setFormData({...formData,customerName:e.target.value})} /></div><div><label className="text-sm font-semibold text-gray-700 block mb-1">เบอร์โทร</label><input className="w-full border p-2 rounded focus:ring-2 focus:ring-blue-500 outline-none" value={formData.contactNumber} onChange={e=>setFormData({...formData,contactNumber:e.target.value})} /></div></div>
+                                    {formData.orderType === 'job' && (<div className="bg-green-50 p-3 rounded border border-green-100 mt-3"><label className="text-sm font-bold text-green-800 mb-1 flex items-center gap-1"><Calendar size={16} /> วันนัดหมายเข้าซ่อม</label><input type="date" className="w-full border p-2 rounded bg-white" value={formData.appointmentDate} onChange={e=>setFormData({...formData,appointmentDate:e.target.value})} /></div>)}
+                                    <hr className="border-gray-100 my-4"/>
+                                    <div>
+                                        <div className="flex justify-between mb-2"><label className="text-sm font-bold">รายการอะไหล่</label>{isEditing && editingStatus!=='pending' && <span className="text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded-full border border-orange-100 flex items-center gap-1"><Lock size={10}/> สั่งแล้ว (แก้ไม่ได้)</span>}</div>
+                                        <div className="bg-gray-50 p-2 rounded border border-gray-200 mb-2 max-h-40 overflow-y-auto custom-scrollbar">{formData.items.length === 0 && <div className="text-center text-xs text-gray-400 py-4">ยังไม่มีรายการอะไหล่</div>}{formData.items.map((item,i)=>(<div key={i} className="flex justify-between bg-white p-2 border rounded shadow-sm mb-1 last:mb-0"><div className="text-sm font-medium">{item.name} <span className="text-gray-400 text-xs ml-1">x{item.quantity}</span><div className="text-xs text-blue-600 font-mono">{item.partNumber}</div></div>{(!isEditing || editingStatus==='pending') && <button onClick={()=>setFormData(p=>({...p,items:p.items.filter((_,idx)=>idx!==i)}))} className="text-red-400 hover:text-red-600"><X size={16}/></button>}</div>))}</div>
+                                        {(!isEditing || editingStatus==='pending') && <div className="bg-blue-50 p-3 rounded border border-blue-100 space-y-2">
+                                            <div className="flex flex-wrap gap-2 mb-2"><span className="text-xs font-bold text-gray-400 w-full flex items-center gap-1"><Zap size={10}/> เลือกด่วน:</span>{POPULAR_PARTS.map((part, idx) => (<button key={idx} onClick={() => handleQuickAdd(part)} className="px-2 py-1 rounded-full bg-white border text-xs text-gray-600 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition">{part.name}</button>))}</div>
+                                            <div className="relative"><input list="catalog-parts" className="w-full border p-1.5 text-sm rounded focus:outline-none focus:border-blue-400 pr-8" placeholder="ระบุชื่ออะไหล่ หรือเลือกจากรายการ..." name="name" value={tempItem.name} onChange={handleCatalogSelect}/></div>
+                                            <div className="relative flex items-center"><input list="catalog-pns" className="w-full border p-1.5 text-sm rounded focus:outline-none focus:border-blue-400 pr-8" placeholder="P/N (ถ้ามี)" name="partNumber" value={tempItem.partNumber} onChange={handleCatalogSelect}/><button onClick={() => startScanner('input')} className="absolute right-2 text-gray-400 hover:text-blue-600" title="สแกน P/N"><TextCursor size={20} /></button></div>
+                                            <datalist id="catalog-parts">{catalog.map(c => <option key={c.id} value={c.name}>{c.partNumber}</option>)}</datalist><datalist id="catalog-pns">{catalog.map(c => <option key={c.id} value={c.partNumber}>{c.name}</option>)}</datalist>
+                                            <div className="flex gap-2"><input type="number" className="w-20 border p-1.5 text-sm text-center rounded focus:outline-none focus:border-blue-400" min="1" value={tempItem.quantity} onChange={e=>setTempItem({...tempItem,quantity:parseInt(e.target.value)||1})}/><button onClick={handleAddItem} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded text-sm font-medium transition-colors">เพิ่ม</button></div>
+                                        </div>}
+                                    </div>
+                                    <hr className="border-gray-100 my-4"/>
+                                    <div className="bg-yellow-50 p-3 rounded border border-yellow-200"><label className="text-sm font-bold text-yellow-800 mb-2 flex items-center gap-1"><Wallet size={16} /> ข้อมูลการชำระเงิน (Payment)</label><div className="grid grid-cols-2 gap-3"><div><label className="text-xs text-gray-600 block mb-1">ยอดรวมทั้งหมด (บาท)</label><input type="number" className="w-full border p-1.5 text-sm rounded" placeholder="0.00" value={formData.totalPrice} onChange={e=>setFormData({...formData,totalPrice:e.target.value})} /></div><div><label className="text-xs text-gray-600 block mb-1">สถานะ</label><select className="w-full border p-1.5 text-sm rounded bg-white" value={formData.paymentStatus} onChange={e=>setFormData({...formData,paymentStatus:e.target.value})}><option value="unpaid">ยังไม่จ่าย</option><option value="deposit">มัดจำ (Deposit)</option><option value="paid">จ่ายครบแล้ว (Paid)</option></select></div></div>{formData.paymentStatus === 'deposit' && (<div className="mt-2 animate-fade-in"><label className="text-xs text-gray-600 block mb-1">จำนวนเงินมัดจำ (บาท)</label><input type="number" className="w-full border p-1.5 text-sm rounded bg-white font-bold text-orange-600" placeholder="0.00" value={formData.depositAmount} onChange={e=>setFormData({...formData,depositAmount:e.target.value})} /></div>)}</div>
+                                </div>
+                                <div className="p-4 border-t bg-gray-50 flex gap-3 rounded-b-xl"><button onClick={()=>setShowForm(false)} className="flex-1 border border-gray-300 bg-white p-2 rounded text-gray-700 hover:bg-gray-50 transition font-medium">ยกเลิก</button><button onClick={handleSubmit} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white p-2 rounded shadow transition font-bold">บันทึกรายการ</button></div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Scanner Modal (OCR ONLY) */}
+                    {showScanner && (
+                        <div className="fixed inset-0 bg-black/95 z-[70] flex flex-col items-center justify-center p-0 md:p-4">
+                            <div className="w-full h-full md:h-auto md:max-w-md bg-black md:bg-white rounded-none md:rounded-xl overflow-hidden shadow-2xl relative flex flex-col">
+                                
+                                {/* Header */}
+                                <div className="p-4 bg-slate-900 flex justify-between items-center text-white border-b border-slate-700 shrink-0">
+                                    <div className="flex items-center gap-2">
+                                        <TextCursor size={20} className="text-blue-400"/>
+                                        <h3 className="font-bold text-lg">
+                                            {scannerMode === 'input' ? 'สแกนตัวเลข P/N (OCR)' : 'โหมดรับของเข้า (OCR)'}
+                                        </h3>
+                                    </div>
+                                    <button onClick={closeScanner} className="bg-slate-800 p-2 rounded-full hover:bg-slate-700 text-gray-300 hover:text-white transition"><X size={20} /></button>
+                                </div>
+                                
+                                {/* Camera Viewport */}
+                                <div className="flex-1 bg-black relative flex items-center justify-center overflow-hidden">
+                                    <div className="ocr-video-container">
+                                        <video ref={videoRef} autoPlay playsInline muted className="ocr-video"></video>
+                                        <div className="ocr-overlay"></div>
+                                        <div className="ocr-guide-text">วางตัวเลขในกรอบสีฟ้า</div>
+                                        {ocrProcessing && (
+                                            <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center text-white z-20 backdrop-blur-sm">
+                                                <div className="animate-spin rounded-full h-10 w-10 border-4 border-blue-500 border-t-transparent mb-3"></div>
+                                                <span className="text-sm font-bold animate-pulse">กำลังอ่านตัวเลข...</span>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+
+                                {/* Controls */}
+                                <div className="p-4 bg-slate-900 md:bg-white border-t border-slate-800 md:border-gray-200 shrink-0">
+                                    <div className="text-center">
+                                        <button onClick={handleOcrCapture} disabled={ocrProcessing} className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 transition transform active:scale-95 disabled:opacity-50 disabled:scale-100">
+                                            <Camera size={24} /> ถ่ายภาพเพื่ออ่านตัวเลข
+                                        </button>
+                                        <button onClick={closeScanner} className="mt-3 text-gray-400 hover:text-white md:text-gray-500 md:hover:text-gray-800 text-sm font-medium">ยกเลิก</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<PartsTrackerApp />);
+    </script>
+</body>
+</html>
