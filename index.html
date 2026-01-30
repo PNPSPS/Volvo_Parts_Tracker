@@ -46,6 +46,14 @@
         .ocr-video { width: 100%; height: 100%; object-fit: cover; }
         .ocr-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 80%; height: 15vh; border: 2px solid rgba(59, 130, 246, 0.8); border-radius: 8px; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6); pointer-events: none; z-index: 10; }
         .ocr-guide-text { position: absolute; top: 30%; left: 50%; transform: translateX(-50%); color: white; font-size: 0.9rem; text-shadow: 0 2px 4px rgba(0,0,0,0.8); z-index: 20; white-space: nowrap; }
+        
+        /* Voice Pulse Animation */
+        @keyframes pulse-red {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+        .animate-pulse-red { animation: pulse-red 1.5s infinite; }
     </style>
 </head>
 <body class="bg-gray-100 text-slate-800">
@@ -76,7 +84,7 @@
             PlusCircle, Search, Truck, CheckCircle, Phone, Clock, Package, 
             ArrowRight, Trash2, User, Car, Tag, Edit2, X, Lock, 
             AlertTriangle, Copy, Bell, Users, Calendar, LayoutDashboard, History, Timer,
-            Store, Wrench, DollarSign, Wallet, Filter, Printer, Banknote, Database, ShoppingCart, TextCursor, Zap, Camera, Eye, EyeOff, ChevronDown, ChevronUp
+            Store, Wrench, DollarSign, Wallet, Filter, Printer, Banknote, Database, ShoppingCart, TextCursor, Zap, Camera, Eye, EyeOff, ChevronDown, ChevronUp, Mic, FileDown, CopyPlus
         } from 'lucide-react';
 
         // ==========================================
@@ -88,7 +96,7 @@
         const firebaseConfig = {
             apiKey:"AIzaSyDKx0owJ6apEAF5mY44C1q3CGY53Nz5uhU",             
             authDomain:"volvo-parts-tracker.firebaseapp.com",
-            projectId:"volvo-parts-tracker",    
+            projectId:"volvo-parts-tracker",      
             storageBucket:"volvo-parts-tracker.firebasestorage.app",
             messagingSenderId:"747510265490",
             appId:"1:747510265490:web:0c959f86358f7b56b8184b",
@@ -205,14 +213,18 @@
             const [catalogFormData, setCatalogFormData] = useState({ partNumber: '', name: '', price: '', category: '' });
             const [printOrder, setPrintOrder] = useState(null);
 
-            // Scanner States (Only OCR now)
+            // Scanner States (OCR Only)
             const [showScanner, setShowScanner] = useState(false);
             const [scannerMode, setScannerMode] = useState('input');
             const [ocrProcessing, setOcrProcessing] = useState(false);
             
+            // Voice Input State
+            const [isListening, setIsListening] = useState(false);
+            const [voiceTarget, setVoiceTarget] = useState(null); // 'search' or 'item'
+
             // Refs
-            const streamRef = useRef(null); // For Camera Stream (Global management)
-            const videoRef = useRef(null); // For OCR Video Element
+            const streamRef = useRef(null); 
+            const videoRef = useRef(null); 
 
             useEffect(() => { const timer = setInterval(() => setCurrentTime(Date.now()), 30000); return () => clearInterval(timer); }, []);
             useEffect(() => { if (firebaseConfig.apiKey === "YOUR_API_KEY") { setLoading(false); return; } signInAnonymously(auth).catch((error) => console.error("Login Failed:", error)); return onAuthStateChanged(auth, setUser); }, []);
@@ -240,18 +252,13 @@
                 }
             };
 
-            // Effect to handle Scanner Logic lifecycle
             useEffect(() => {
                 if (showScanner) {
-                    stopAllCameras(); // Start fresh
-                    
-                    // Always start OCR camera
+                    stopAllCameras(); 
                     navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
                         .then(stream => {
-                            streamRef.current = stream; // Store globally
-                            if (videoRef.current) {
-                                videoRef.current.srcObject = stream;
-                            }
+                            streamRef.current = stream; 
+                            if (videoRef.current) videoRef.current.srcObject = stream;
                         })
                         .catch(err => {
                             console.error("Camera Error:", err);
@@ -261,73 +268,107 @@
                 } else {
                     stopAllCameras();
                 }
-
-                // Cleanup on unmount or change
                 return () => stopAllCameras();
             }, [showScanner]);
 
-            const processScanResult = async (text) => {
-                const cleanText = text.replace(/[^a-zA-Z0-9]/g, ''); // Clean special chars
-                
-                if (cleanText.length < 3) return; // Ignore too short nonsense
-
-                if (scannerMode === 'input') { 
-                    setTempItem(prev => ({ ...prev, partNumber: cleanText })); 
-                    setShowScanner(false); 
-                    addNotification(`รับข้อมูล: ${cleanText}`, 'info'); 
-                } else if (scannerMode === 'receive') {
-                    // Fuzzy matching
-                    const targetOrder = orders.find(o => o.status === 'ordered' && o.items.some(i => {
-                        const itemPN = (i.partNumber || '').replace(/[^a-zA-Z0-9]/g, '');
-                        return itemPN === cleanText || itemPN.includes(cleanText) || cleanText.includes(itemPN);
-                    }));
-
-                    if (targetOrder) { 
-                        await updateStatus(targetOrder.id, 'arrived'); 
-                        addNotification(`✅ รับของสำเร็จ! JO: ${targetOrder.jobOrder}`, 'success'); 
-                        // Note: Don't close scanner in receive mode to allow rapid scanning
-                    } else { 
-                        const alreadyArrived = orders.find(o => o.status === 'arrived' && o.items.some(i => (i.partNumber || '').replace(/[^a-zA-Z0-9]/g, '').includes(cleanText)));
-                        if(alreadyArrived) addNotification(`⚠️ รายการนี้รับไปแล้ว (JO: ${alreadyArrived.jobOrder})`, 'warning');
-                        else addNotification(`❌ ไม่พบข้อมูลสั่งซื้อ: ${cleanText}`, 'error');
-                    }
+            // --- VOICE INPUT LOGIC ---
+            const startVoiceInput = (target) => {
+                if (!('webkitSpeechRecognition' in window)) {
+                    alert("เบราว์เซอร์นี้ไม่รองรับการสั่งงานด้วยเสียง (รองรับ Chrome/Safari)");
+                    return;
                 }
+                const recognition = new window.webkitSpeechRecognition();
+                recognition.lang = 'th-TH'; // Thai Language
+                recognition.continuous = false;
+                recognition.interimResults = false;
+
+                recognition.onstart = () => { setIsListening(true); setVoiceTarget(target); };
+                recognition.onend = () => { setIsListening(false); setVoiceTarget(null); };
+                recognition.onerror = (event) => { console.error(event.error); setIsListening(false); };
+
+                recognition.onresult = (event) => {
+                    const transcript = event.results[0][0].transcript;
+                    if (target === 'search') {
+                        setSearchTerm(transcript);
+                        addNotification(`ค้นหา: "${transcript}"`, 'info');
+                    } else if (target === 'item') {
+                        setTempItem(prev => ({ ...prev, name: transcript }));
+                        addNotification(`ใส่ชื่ออะไหล่: "${transcript}"`, 'info');
+                    }
+                };
+                recognition.start();
             };
 
+            // --- EXPORT TO CSV LOGIC ---
+            const exportToCSV = () => {
+                const headers = ["Date", "JO", "Customer", "License", "Type", "Status", "Parts", "Total", "Deposit"];
+                const rows = orders.map(o => [
+                    formatDate(o.createdAt),
+                    o.jobOrder || '-',
+                    o.customerName || '-',
+                    o.licensePlate || '-',
+                    o.orderType || 'job',
+                    STATUS_LABELS[o.status] || o.status,
+                    (o.items || []).map(i => `${i.name} (${i.quantity})`).join('; '),
+                    o.totalPrice || '0',
+                    o.depositAmount || '0'
+                ]);
+
+                let csvContent = "data:text/csv;charset=utf-8,\uFEFF" // UTF-8 BOM
+                    + headers.join(",") + "\n" 
+                    + rows.map(e => e.map(cell => `"${(cell + '').replace(/"/g, '""')}"`).join(",")).join("\n");
+
+                const encodedUri = encodeURI(csvContent);
+                const link = document.createElement("a");
+                link.setAttribute("href", encodedUri);
+                link.setAttribute("download", `volvo_parts_export_${new Date().toISOString().slice(0,10)}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                addNotification("ดาวน์โหลดรายงานเรียบร้อย", "success");
+            };
+
+            // --- CLONE ORDER LOGIC ---
+            const cloneOrder = (order) => {
+                const { id, createdAt, completedAt, status, ...cleanOrder } = order;
+                setFormData({ ...cleanOrder, status: 'pending', appointmentDate: new Date().toISOString().split('T')[0] });
+                setIsEditing(false);
+                setEditingStatus('pending');
+                setCurrentOrderId(null);
+                setShowForm(true);
+                addNotification("คัดลอกข้อมูลแล้ว กรุณาตรวจสอบและบันทึก", "info");
+            };
+
+            // ... (Rest of logic: OCR, CRUD - Same as previous version) ...
+            const processScanResult = async (text) => {
+                const cleanText = text.replace(/[^a-zA-Z0-9]/g, ''); 
+                if (cleanText.length < 3) return; 
+                if (scannerMode === 'input') { setTempItem(prev => ({ ...prev, partNumber: cleanText })); setShowScanner(false); addNotification(`รับข้อมูล: ${cleanText}`, 'info'); } 
+                else if (scannerMode === 'receive') {
+                    const targetOrder = orders.find(o => o.status === 'ordered' && o.items.some(i => { const itemPN = (i.partNumber || '').replace(/[^a-zA-Z0-9]/g, ''); return itemPN === cleanText || itemPN.includes(cleanText) || cleanText.includes(itemPN); }));
+                    if (targetOrder) { await updateStatus(targetOrder.id, 'arrived'); addNotification(`✅ รับของสำเร็จ! JO: ${targetOrder.jobOrder}`, 'success'); } 
+                    else { const alreadyArrived = orders.find(o => o.status === 'arrived' && o.items.some(i => (i.partNumber || '').replace(/[^a-zA-Z0-9]/g, '').includes(cleanText))); if(alreadyArrived) addNotification(`⚠️ รับไปแล้ว (JO: ${alreadyArrived.jobOrder})`, 'warning'); else addNotification(`❌ ไม่พบ: ${cleanText}`, 'error'); }
+                }
+            };
             const handleOcrCapture = async () => {
                 if (!videoRef.current) return;
                 setOcrProcessing(true);
                 const canvas = document.createElement('canvas');
                 canvas.width = videoRef.current.videoWidth;
                 canvas.height = videoRef.current.videoHeight;
-                // Crop center area (heuristic based on overlay CSS)
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-                
                 try {
                     const result = await Tesseract.recognize(canvas, 'eng');
                     const text = result.data.text;
-                    // Regex: Look for 7-8 digits sequence
                     const numbers = text.match(/\b\d[\d\s-]{5,}\d\b/g); 
-                    
-                    if (numbers && numbers.length > 0) {
-                        const bestMatch = numbers.reduce((a, b) => a.replace(/\s/g,'').length > b.replace(/\s/g,'').length ? a : b);
-                        const cleanPN = bestMatch.replace(/[^0-9]/g, '');
-                        processScanResult(cleanPN);
-                    } else {
-                        addNotification("ไม่พบตัวเลขที่ชัดเจน ลองขยับกล้อง", "warning");
-                    }
-                } catch (err) {
-                    console.error(err);
-                    addNotification("อ่านภาพไม่สำเร็จ", "error");
-                }
+                    if (numbers && numbers.length > 0) { const bestMatch = numbers.reduce((a, b) => a.replace(/\s/g,'').length > b.replace(/\s/g,'').length ? a : b); const cleanPN = bestMatch.replace(/[^0-9]/g, ''); processScanResult(cleanPN); } 
+                    else { addNotification("ไม่พบตัวเลขชัดเจน ลองใหม่", "warning"); }
+                } catch (err) { console.error(err); addNotification("อ่านภาพไม่สำเร็จ", "error"); }
                 setOcrProcessing(false);
             };
-
             const startScanner = (mode) => { setScannerMode(mode); setShowScanner(true); };
             const closeScanner = () => { setShowScanner(false); stopAllCameras(); };
-
-            // ... (Rest of CRUD Actions are same as before) ...
             const addNotification = (message, type) => { const id = Date.now(); setNotifications(prev => [...prev, { id, message, type }]); setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 5000); };
             const copyToClipboard = (text) => { navigator.clipboard.writeText(text); addNotification("คัดลอกข้อมูลแล้ว", "info"); };
             const resetForm = () => { setFormData({ customerName: '', licensePlate: '', contactNumber: '', jobOrder: '', requesterName: '', appointmentDate: '', isVOR: false, items: [], orderType: 'job', paymentStatus: 'unpaid', totalPrice: '', depositAmount: '' }); setTempItem({ name: '', partNumber: '', quantity: 1 }); setIsEditing(false); setEditingStatus('pending'); setCurrentOrderId(null); };
@@ -346,7 +387,12 @@
 
             const filteredOrders = orders.filter(o => { 
                 const searchLower = searchTerm.toLowerCase();
-                const matchesSearch = (o.customerName || '').toLowerCase().includes(searchLower) || (o.licensePlate || '').toLowerCase().includes(searchLower) || (o.jobOrder || '').toLowerCase().includes(searchLower) || (o.requesterName && o.requesterName.toLowerCase().includes(searchLower)) || (o.items && o.items.some(item => (item.partNumber || '').toLowerCase().includes(searchLower))); 
+                const matchesSearch = 
+                    (o.customerName || '').toLowerCase().includes(searchLower) || 
+                    (o.licensePlate || '').toLowerCase().includes(searchLower) || 
+                    (o.jobOrder || '').toLowerCase().includes(searchLower) || 
+                    (o.requesterName && o.requesterName.toLowerCase().includes(searchLower)) || 
+                    (o.items && o.items.some(item => (item.partNumber || '').toLowerCase().includes(searchLower) || (item.name || '').toLowerCase().includes(searchLower)));
                 const matchesFilter = filterType === 'all' ? true : filterType === 'vor' ? o.isVOR : o.orderType === filterType; 
                 return matchesSearch && matchesFilter; 
             });
@@ -372,7 +418,14 @@
                     <header className="bg-slate-900 text-white p-4 shadow-md sticky top-0 z-50 no-print">
                         <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
                             <div className="flex items-center gap-4 w-full md:w-auto"><div className="flex items-center gap-3"><div className="bg-blue-600 p-2 rounded-full shrink-0"><Truck size={24} className="text-white" /></div><div><h1 className="text-xl font-bold leading-tight">Volvo Service</h1><p className="text-xs text-gray-400">Parts Tracker</p></div></div><div className="hidden md:flex ml-8 bg-slate-800 rounded-lg p-1"><button onClick={() => setCurrentTab('dashboard')} className={`px-4 py-1.5 rounded-md text-sm font-medium flex items-center gap-2 transition-all ${currentTab==='dashboard' ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}><LayoutDashboard size={16}/> กระดานงาน</button><button onClick={() => setCurrentTab('history')} className={`px-4 py-1.5 rounded-md text-sm font-medium flex items-center gap-2 transition-all ${currentTab==='history' ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}><History size={16}/> ประวัติทั้งหมด</button><button onClick={() => setCurrentTab('catalog')} className={`px-4 py-1.5 rounded-md text-sm font-medium flex items-center gap-2 transition-all ${currentTab==='catalog' ? 'bg-blue-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}><Database size={16}/> คลังอะไหล่</button></div></div>
-                            <div className="flex gap-2 w-full md:w-auto items-center"><button onClick={() => startScanner('receive')} className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-bold shadow-md transition-colors whitespace-nowrap"><Camera size={18} /> <span className="hidden sm:inline">สแกนรับของเข้า</span></button><div className="relative flex-1 md:w-64"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} /><input type="text" placeholder="ค้นหา JO, ทะเบียน, ลูกค้า, P/N..." className="w-full pl-10 pr-4 py-2 rounded-lg bg-slate-800 border-slate-700 text-white placeholder-gray-500 focus:ring-2 focus:ring-blue-500 focus:outline-none" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div></div>
+                            <div className="flex gap-2 w-full md:w-auto items-center">
+                                <button onClick={() => startScanner('receive')} className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg flex items-center gap-2 text-sm font-bold shadow-md transition-colors whitespace-nowrap"><Camera size={18} /> <span className="hidden sm:inline">สแกนรับของ</span></button>
+                                <div className="relative flex-1 md:w-64 flex items-center bg-white rounded-lg">
+                                    <Search className="ml-3 text-gray-400" size={18} />
+                                    <input type="text" placeholder="ค้นหา..." className="w-full pl-2 pr-2 py-2 rounded-lg bg-transparent border-none focus:ring-0 focus:outline-none text-slate-800" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+                                    <button onClick={() => startVoiceInput('search')} className={`p-2 rounded-full hover:bg-gray-100 transition ${isListening && voiceTarget==='search' ? 'text-red-500 animate-pulse-red' : 'text-gray-400'}`}><Mic size={18}/></button>
+                                </div>
+                            </div>
                         </div>
                         <div className="md:hidden flex mt-3 border-t border-slate-700 pt-3"><button onClick={() => setCurrentTab('dashboard')} className={`flex-1 text-center py-1 text-sm font-medium border-b-2 ${currentTab==='dashboard' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400'}`}>Dashboard</button><button onClick={() => setCurrentTab('history')} className={`flex-1 text-center py-1 text-sm font-medium border-b-2 ${currentTab==='history' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400'}`}>History</button><button onClick={() => setCurrentTab('catalog')} className={`flex-1 text-center py-1 text-sm font-medium border-b-2 ${currentTab==='catalog' ? 'border-blue-500 text-white' : 'border-transparent text-gray-400'}`}>Catalog</button></div>
                     </header>
@@ -386,7 +439,7 @@
                                 </div>
                             )}
                             {currentTab === 'dashboard' && (<div className="flex flex-col md:flex-row gap-4 h-full md:overflow-x-auto pb-20 md:pb-4 items-start overflow-y-auto"><KanbanColumn title="รอสั่งซื้อ" statusKey="pending" items={filteredOrders.filter(o => o.status === 'pending')} icon={Clock} colorClass="bg-slate-600" /><KanbanColumn title="สั่งซื้อแล้ว" statusKey="ordered" items={filteredOrders.filter(o => o.status === 'ordered')} icon={Package} colorClass="bg-yellow-600" /><KanbanColumn title="อะไหล่มาถึง" statusKey="arrived" items={filteredOrders.filter(o => o.status === 'arrived')} icon={Truck} colorClass="bg-blue-600" /><KanbanColumn title="นัดหมายแล้ว" statusKey="contacted" items={filteredOrders.filter(o => o.status === 'contacted')} icon={Phone} colorClass="bg-purple-600" /><KanbanColumn title="ติดตั้ง/ปิดงาน" statusKey="completed" items={filteredOrders.filter(o => o.status === 'completed')} icon={CheckCircle} colorClass="bg-green-600" /></div>)}
-                            {currentTab === 'history' && (<div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden flex flex-col h-full animate-fade-in"><div className="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center"><h3 className="font-bold text-gray-800 flex items-center gap-2"><History size={20} className="text-blue-600"/> ประวัติการสั่งซื้อและรับบริการทั้งหมด</h3><span className="text-xs text-gray-500">พบ {filteredOrders.length} รายการ</span></div><div className="overflow-auto flex-1 custom-scrollbar"><table className="w-full text-left border-collapse"><thead className="bg-white text-gray-600 text-xs uppercase tracking-wider sticky top-0 shadow-sm z-10"><tr><th className="p-4 font-semibold border-b">วันที่เปิดงาน</th><th className="p-4 font-semibold border-b">ข้อมูลลูกค้า</th><th className="p-4 font-semibold border-b w-1/4">รายการอะไหล่</th><th className="p-4 font-semibold border-b text-center">ประเภท</th><th className="p-4 font-semibold border-b text-center">สถานะ</th><th className="p-4 font-semibold border-b text-center">การชำระเงิน</th><th className="p-4 font-semibold border-b text-center">จัดการ</th></tr></thead><tbody className="divide-y divide-gray-100 text-sm">{filteredOrders.length > 0 ? filteredOrders.map(order => (<tr key={order.id} className="hover:bg-blue-50/30 transition group"><td className="p-4 whitespace-nowrap text-gray-500 align-top"><div className="font-medium">{formatDate(order.createdAt)}</div><div className="text-xs text-gray-400">{(formatDateTime(order.createdAt).split(' ')[1] || '')}</div>{order.isVOR && <span className="mt-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-600">VOR</span>}</td><td className="p-4 align-top"><div className="font-bold text-gray-900">{order.customerName}</div><div className="text-xs text-gray-500">{order.licensePlate || 'ไม่ระบุทะเบียน'}</div>{order.orderType === 'job' && <div className="text-xs font-mono text-blue-600 mt-1">JO: {order.jobOrder}</div>}</td><td className="p-4 align-top"><div className="space-y-1">{(order.items || []).map((item, i) => (<div key={i} className="flex justify-between items-start text-xs border-b border-dashed border-gray-200 last:border-0 pb-1 last:pb-0"><div><span className="text-gray-700 font-medium">{item.name}</span>{item.partNumber && <span className="block text-gray-400 text-[10px] font-mono">{item.partNumber}</span>}</div><span className="bg-gray-100 text-gray-600 px-1.5 rounded ml-2 whitespace-nowrap">x{item.quantity}</span></div>))}</div></td><td className="p-4 align-top text-center">{order.orderType === 'store' ? <span className="text-[10px] font-bold bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full">หน้าร้าน</span> : <span className="text-[10px] font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-full">งานซ่อม</span>}</td><td className="p-4 align-top text-center"><span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[order.status] || 'bg-gray-100 text-gray-800'}`}>{STATUS_LABELS[order.status] || order.status}</span></td><td className="p-4 align-top text-center"><div className="flex flex-col items-center gap-1"><PaymentBadge status={order.paymentStatus} deposit={order.depositAmount} total={order.totalPrice} />{order.totalPrice && <div className="text-[10px] text-gray-400">รวม: {formatMoney(order.totalPrice)}</div>}</div></td><td className="p-4 align-top text-center"><div className="flex justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={() => openEditModal(order)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded"><Edit2 size={14}/></button><button onClick={() => deleteOrder(order.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded"><Trash2 size={14}/></button></div></td></tr>)) : (<tr><td colSpan="7" className="p-12 text-center text-gray-400"><div className="flex flex-col items-center gap-2"><Search size={32} className="opacity-20"/><span>ไม่พบประวัติการสั่งซื้อที่ค้นหา</span></div></td></tr>)}</tbody></table></div></div>)}
+                            {currentTab === 'history' && (<div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden flex flex-col h-full animate-fade-in"><div className="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center"><h3 className="font-bold text-gray-800 flex items-center gap-2"><History size={20} className="text-blue-600"/> ประวัติการสั่งซื้อและรับบริการทั้งหมด</h3><div className="flex gap-2"><button onClick={exportToCSV} className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-1"><FileDown size={16}/> Export CSV</button><span className="text-xs text-gray-500 self-center">พบ {filteredOrders.length} รายการ</span></div></div><div className="overflow-auto flex-1 custom-scrollbar"><table className="w-full text-left border-collapse"><thead className="bg-white text-gray-600 text-xs uppercase tracking-wider sticky top-0 shadow-sm z-10"><tr><th className="p-4 font-semibold border-b">วันที่เปิดงาน</th><th className="p-4 font-semibold border-b">ข้อมูลลูกค้า</th><th className="p-4 font-semibold border-b w-1/4">รายการอะไหล่</th><th className="p-4 font-semibold border-b text-center">ประเภท</th><th className="p-4 font-semibold border-b text-center">สถานะ</th><th className="p-4 font-semibold border-b text-center">การชำระเงิน</th><th className="p-4 font-semibold border-b text-center">จัดการ</th></tr></thead><tbody className="divide-y divide-gray-100 text-sm">{filteredOrders.length > 0 ? filteredOrders.map(order => (<tr key={order.id} className="hover:bg-blue-50/30 transition group"><td className="p-4 whitespace-nowrap text-gray-500 align-top"><div className="font-medium">{formatDate(order.createdAt)}</div><div className="text-xs text-gray-400">{(formatDateTime(order.createdAt).split(' ')[1] || '')}</div>{order.isVOR && <span className="mt-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-600">VOR</span>}</td><td className="p-4 align-top"><div className="font-bold text-gray-900">{order.customerName}</div><div className="text-xs text-gray-500">{order.licensePlate || 'ไม่ระบุทะเบียน'}</div>{order.orderType === 'job' && <div className="text-xs font-mono text-blue-600 mt-1">JO: {order.jobOrder}</div>}</td><td className="p-4 align-top"><div className="space-y-1">{(order.items || []).map((item, i) => (<div key={i} className="flex justify-between items-start text-xs border-b border-dashed border-gray-200 last:border-0 pb-1 last:pb-0"><div><span className="text-gray-700 font-medium">{item.name}</span>{item.partNumber && <span className="block text-gray-400 text-[10px] font-mono">{item.partNumber}</span>}</div><span className="bg-gray-100 text-gray-600 px-1.5 rounded ml-2 whitespace-nowrap">x{item.quantity}</span></div>))}</div></td><td className="p-4 align-top text-center">{order.orderType === 'store' ? <span className="text-[10px] font-bold bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full">หน้าร้าน</span> : <span className="text-[10px] font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-full">งานซ่อม</span>}</td><td className="p-4 align-top text-center"><span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[order.status] || 'bg-gray-100 text-gray-800'}`}>{STATUS_LABELS[order.status] || order.status}</span></td><td className="p-4 align-top text-center"><div className="flex flex-col items-center gap-1"><PaymentBadge status={order.paymentStatus} deposit={order.depositAmount} total={order.totalPrice} />{order.totalPrice && <div className="text-[10px] text-gray-400">รวม: {formatMoney(order.totalPrice)}</div>}</div></td><td className="p-4 align-top text-center"><div className="flex justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={() => cloneOrder(order)} className="p-1.5 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded" title="โคลนงาน"><CopyPlus size={14}/></button><button onClick={() => openEditModal(order)} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded" title="แก้ไข"><Edit2 size={14}/></button><button onClick={() => deleteOrder(order.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded" title="ลบ"><Trash2 size={14}/></button></div></td></tr>)) : (<tr><td colSpan="7" className="p-12 text-center text-gray-400"><div className="flex flex-col items-center gap-2"><Search size={32} className="opacity-20"/><span>ไม่พบประวัติการสั่งซื้อที่ค้นหา</span></div></td></tr>)}</tbody></table></div></div>)}
                             {currentTab === 'catalog' && (<div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden flex flex-col h-full animate-fade-in"><div className="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center"><div><h3 className="font-bold text-gray-800 flex items-center gap-2"><Database size={20} className="text-blue-600"/> คลังอะไหล่ (Parts Catalog)</h3><p className="text-xs text-gray-500">จัดการข้อมูลอะไหล่เพื่อการสั่งซื้อที่รวดเร็ว</p></div><button onClick={() => setShowCatalogForm(true)} className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg flex items-center gap-2 text-sm font-bold shadow transition-colors"><PlusCircle size={16} /> เพิ่มอะไหล่ใหม่</button></div><div className="overflow-auto flex-1 custom-scrollbar"><table className="w-full text-left border-collapse"><thead className="bg-white text-gray-600 text-xs uppercase tracking-wider sticky top-0 shadow-sm z-10"><tr><th className="p-4 font-semibold border-b">P/N (รหัสอะไหล่)</th><th className="p-4 font-semibold border-b">ชื่ออะไหล่</th><th className="p-4 font-semibold border-b">ราคา (ประมาณ)</th><th className="p-4 font-semibold border-b text-center">สั่งทันที</th><th className="p-4 font-semibold border-b text-center">จัดการ</th></tr></thead><tbody className="divide-y divide-gray-100 text-sm">{filteredCatalog.length > 0 ? filteredCatalog.map(item => (<tr key={item.id} className="hover:bg-blue-50/30 transition group"><td className="p-4 font-mono text-blue-600 font-medium">{item.partNumber}</td><td className="p-4 font-bold text-gray-800">{item.name} <div className="text-xs text-gray-400 font-normal">{item.category}</div></td><td className="p-4 text-gray-600">{item.price ? `฿${formatMoney(item.price)}` : '-'}</td><td className="p-4 text-center"><button onClick={() => { setCurrentTab('dashboard'); openAddModal(item); }} className="bg-green-100 hover:bg-green-200 text-green-700 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center justify-center gap-1 mx-auto transition"><ShoppingCart size={14}/> สั่งเลย</button></td><td className="p-4 text-center"><button onClick={() => deleteCatalogItem(item.id)} className="text-gray-300 hover:text-red-500 p-1"><Trash2 size={16}/></button></td></tr>)) : (<tr><td colSpan="5" className="p-12 text-center text-gray-400"><div className="flex flex-col items-center gap-2"><Database size={32} className="opacity-20"/><span>ไม่พบข้อมูลอะไหล่</span></div></td></tr>)}</tbody></table></div></div>)}
                         </div>
                         }
@@ -422,7 +475,10 @@
                                         <div className="bg-gray-50 p-2 rounded border border-gray-200 mb-2 max-h-40 overflow-y-auto custom-scrollbar">{formData.items.length === 0 && <div className="text-center text-xs text-gray-400 py-4">ยังไม่มีรายการอะไหล่</div>}{formData.items.map((item,i)=>(<div key={i} className="flex justify-between bg-white p-2 border rounded shadow-sm mb-1 last:mb-0"><div className="text-sm font-medium">{item.name} <span className="text-gray-400 text-xs ml-1">x{item.quantity}</span><div className="text-xs text-blue-600 font-mono">{item.partNumber}</div></div>{(!isEditing || editingStatus==='pending') && <button onClick={()=>setFormData(p=>({...p,items:p.items.filter((_,idx)=>idx!==i)}))} className="text-red-400 hover:text-red-600"><X size={16}/></button>}</div>))}</div>
                                         {(!isEditing || editingStatus==='pending') && <div className="bg-blue-50 p-3 rounded border border-blue-100 space-y-2">
                                             <div className="flex flex-wrap gap-2 mb-2"><span className="text-xs font-bold text-gray-400 w-full flex items-center gap-1"><Zap size={10}/> เลือกด่วน:</span>{POPULAR_PARTS.map((part, idx) => (<button key={idx} onClick={() => handleQuickAdd(part)} className="px-2 py-1 rounded-full bg-white border text-xs text-gray-600 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition">{part.name}</button>))}</div>
-                                            <div className="relative"><input list="catalog-parts" className="w-full border p-1.5 text-sm rounded focus:outline-none focus:border-blue-400 pr-8" placeholder="ระบุชื่ออะไหล่ หรือเลือกจากรายการ..." name="name" value={tempItem.name} onChange={handleCatalogSelect}/></div>
+                                            <div className="relative">
+                                                <input list="catalog-parts" className="w-full border p-1.5 text-sm rounded focus:outline-none focus:border-blue-400 pr-8" placeholder="ระบุชื่ออะไหล่ หรือเลือกจากรายการ..." name="name" value={tempItem.name} onChange={handleCatalogSelect}/>
+                                                <button onClick={() => startVoiceInput('item')} className={`absolute right-2 top-1.5 p-1 rounded-full hover:bg-gray-100 transition ${isListening && voiceTarget==='item' ? 'text-red-500 animate-pulse-red' : 'text-gray-400'}`}><Mic size={16}/></button>
+                                            </div>
                                             <div className="relative flex items-center"><input list="catalog-pns" className="w-full border p-1.5 text-sm rounded focus:outline-none focus:border-blue-400 pr-8" placeholder="P/N (ถ้ามี)" name="partNumber" value={tempItem.partNumber} onChange={handleCatalogSelect}/><button onClick={() => startScanner('input')} className="absolute right-2 text-gray-400 hover:text-blue-600" title="สแกน P/N"><TextCursor size={20} /></button></div>
                                             <datalist id="catalog-parts">{catalog.map(c => <option key={c.id} value={c.name}>{c.partNumber}</option>)}</datalist><datalist id="catalog-pns">{catalog.map(c => <option key={c.id} value={c.partNumber}>{c.name}</option>)}</datalist>
                                             <div className="flex gap-2"><input type="number" className="w-20 border p-1.5 text-sm text-center rounded focus:outline-none focus:border-blue-400" min="1" value={tempItem.quantity} onChange={e=>setTempItem({...tempItem,quantity:parseInt(e.target.value)||1})}/><button onClick={handleAddItem} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded text-sm font-medium transition-colors">เพิ่ม</button></div>
@@ -440,46 +496,19 @@
                     {showScanner && (
                         <div className="fixed inset-0 bg-black/95 z-[70] flex flex-col items-center justify-center p-0 md:p-4">
                             <div className="w-full h-full md:h-auto md:max-w-md bg-black md:bg-white rounded-none md:rounded-xl overflow-hidden shadow-2xl relative flex flex-col">
-                                
-                                {/* Header */}
                                 <div className="p-4 bg-slate-900 flex justify-between items-center text-white border-b border-slate-700 shrink-0">
-                                    <div className="flex items-center gap-2">
-                                        <TextCursor size={20} className="text-blue-400"/>
-                                        <h3 className="font-bold text-lg">
-                                            {scannerMode === 'input' ? 'สแกนตัวเลข P/N (OCR)' : 'โหมดรับของเข้า (OCR)'}
-                                        </h3>
-                                    </div>
+                                    <div className="flex items-center gap-2"><TextCursor size={20} className="text-blue-400"/><h3 className="font-bold text-lg">{scannerMode === 'input' ? 'สแกนตัวเลข P/N (OCR)' : 'โหมดรับของเข้า (OCR)'}</h3></div>
                                     <button onClick={closeScanner} className="bg-slate-800 p-2 rounded-full hover:bg-slate-700 text-gray-300 hover:text-white transition"><X size={20} /></button>
                                 </div>
-                                
-                                {/* Camera Viewport */}
                                 <div className="flex-1 bg-black relative flex items-center justify-center overflow-hidden">
-                                    <div className="ocr-video-container">
-                                        <video ref={videoRef} autoPlay playsInline muted className="ocr-video"></video>
-                                        <div className="ocr-overlay"></div>
-                                        <div className="ocr-guide-text">วางตัวเลขในกรอบสีฟ้า</div>
-                                        {ocrProcessing && (
-                                            <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center text-white z-20 backdrop-blur-sm">
-                                                <div className="animate-spin rounded-full h-10 w-10 border-4 border-blue-500 border-t-transparent mb-3"></div>
-                                                <span className="text-sm font-bold animate-pulse">กำลังอ่านตัวเลข...</span>
-                                            </div>
-                                        )}
-                                    </div>
+                                    <div className="ocr-video-container"><video ref={videoRef} autoPlay playsInline muted className="ocr-video"></video><div className="ocr-overlay"></div><div className="ocr-guide-text">วางตัวเลขในกรอบสีฟ้า</div>{ocrProcessing && (<div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center text-white z-20 backdrop-blur-sm"><div className="animate-spin rounded-full h-10 w-10 border-4 border-blue-500 border-t-transparent mb-3"></div><span className="text-sm font-bold animate-pulse">กำลังอ่านตัวเลข...</span></div>)}</div>
                                 </div>
-
-                                {/* Controls */}
                                 <div className="p-4 bg-slate-900 md:bg-white border-t border-slate-800 md:border-gray-200 shrink-0">
-                                    <div className="text-center">
-                                        <button onClick={handleOcrCapture} disabled={ocrProcessing} className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 transition transform active:scale-95 disabled:opacity-50 disabled:scale-100">
-                                            <Camera size={24} /> ถ่ายภาพเพื่ออ่านตัวเลข
-                                        </button>
-                                        <button onClick={closeScanner} className="mt-3 text-gray-400 hover:text-white md:text-gray-500 md:hover:text-gray-800 text-sm font-medium">ยกเลิก</button>
-                                    </div>
+                                    <div className="text-center"><button onClick={handleOcrCapture} disabled={ocrProcessing} className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 transition transform active:scale-95 disabled:opacity-50 disabled:scale-100"><Camera size={24} /> ถ่ายภาพเพื่ออ่านตัวเลข</button><button onClick={closeScanner} className="mt-3 text-gray-400 hover:text-white md:text-gray-500 md:hover:text-gray-800 text-sm font-medium">ยกเลิก</button></div>
                                 </div>
                             </div>
                         </div>
                     )}
-
                 </div>
             );
         }
