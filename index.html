@@ -7,7 +7,9 @@
     
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- 1. Library สำหรับอ่านข้อความจากภาพ (OCR) - Tesseract.js -->
+    <!-- 1. Library สำหรับสแกนบาร์โค้ด -->
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <!-- 2. Library สำหรับอ่านข้อความจากภาพ (OCR) -->
     <script src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'></script>
     
     <!-- Import Map -->
@@ -41,19 +43,14 @@
         .fab-hover:hover { transform: scale(1.05); }
         .fab-active:active { transform: scale(0.95); }
 
+        #reader { width: 100%; border-radius: 8px; overflow: hidden; background: black; }
+        #reader video { object-fit: cover; border-radius: 8px; }
+        
         /* OCR Video Style */
         .ocr-video-container { position: relative; width: 100%; height: 60vh; background: black; border-radius: 12px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
         .ocr-video { width: 100%; height: 100%; object-fit: cover; }
         .ocr-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 80%; height: 15vh; border: 2px solid rgba(59, 130, 246, 0.8); border-radius: 8px; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6); pointer-events: none; z-index: 10; }
         .ocr-guide-text { position: absolute; top: 30%; left: 50%; transform: translateX(-50%); color: white; font-size: 0.9rem; text-shadow: 0 2px 4px rgba(0,0,0,0.8); z-index: 20; white-space: nowrap; }
-        
-        /* Voice Pulse Animation */
-        @keyframes pulse-red {
-            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
-            70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
-        }
-        .animate-pulse-red { animation: pulse-red 1.5s infinite; }
     </style>
 </head>
 <body class="bg-gray-100 text-slate-800">
@@ -84,7 +81,7 @@
             PlusCircle, Search, Truck, CheckCircle, Phone, Clock, Package, 
             ArrowRight, Trash2, User, Car, Tag, Edit2, X, Lock, 
             AlertTriangle, Copy, Bell, Users, Calendar, LayoutDashboard, History, Timer,
-            Store, Wrench, DollarSign, Wallet, Filter, Printer, Banknote, Database, ShoppingCart, TextCursor, Zap, Camera, Eye, EyeOff, ChevronDown, ChevronUp, Mic, FileDown, CopyPlus
+            Store, Wrench, DollarSign, Wallet, Filter, Printer, Banknote, Database, ShoppingCart, TextCursor, Zap, Camera, Eye, EyeOff, ChevronDown, ChevronUp, Mic, FileDown, CopyPlus, Maximize2
         } from 'lucide-react';
 
         // ==========================================
@@ -96,11 +93,11 @@
         const firebaseConfig = {
             apiKey:"AIzaSyDKx0owJ6apEAF5mY44C1q3CGY53Nz5uhU",             
             authDomain:"volvo-parts-tracker.firebaseapp.com",
-            projectId:"volvo-parts-tracker",      
+            projectId:"volvo-parts-tracker",       
             storageBucket:"volvo-parts-tracker.firebasestorage.app",
             messagingSenderId:"747510265490",
             appId:"1:747510265490:web:0c959f86358f7b56b8184b",
-            measurementId: "G-BER1FQ9WJC"
+                        measurementId: "G-BER1FQ9WJC"
         };
         // ==========================================
 
@@ -135,6 +132,102 @@
             return total ? <span className="text-[10px] text-gray-400 font-medium">รอจ่าย: ฿{formatMoney(total)}</span> : null;
         };
 
+        // --- NEW: STATUS DETAIL MODAL ---
+        const StatusDetailModal = ({ statusKey, title, items, colorClass, onClose, onUpdateStatus, onDelete, onEdit, onPrint }) => {
+            return (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[80] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-5xl flex flex-col max-h-[90vh] overflow-hidden animate-fade-in">
+                        {/* Header */}
+                        <div className={`p-4 flex justify-between items-center text-white ${colorClass}`}>
+                            <div className="flex items-center gap-3">
+                                <h3 className="text-xl font-bold flex items-center gap-2">{title}</h3>
+                                <span className="bg-white/20 px-3 py-0.5 rounded-full text-sm backdrop-blur-sm">{items.length} รายการ</span>
+                            </div>
+                            <button onClick={onClose} className="bg-white/10 hover:bg-white/20 p-2 rounded-full transition"><X size={20}/></button>
+                        </div>
+
+                        {/* Content (Table) */}
+                        <div className="flex-1 overflow-auto p-0 custom-scrollbar bg-gray-50">
+                            {items.length === 0 ? (
+                                <div className="flex flex-col items-center justify-center h-64 text-gray-400">
+                                    <Package size={48} className="mb-2 opacity-30"/>
+                                    <p>ไม่มีรายการในสถานะนี้</p>
+                                </div>
+                            ) : (
+                                <table className="w-full text-left border-collapse">
+                                    <thead className="bg-white text-gray-600 text-xs uppercase tracking-wider sticky top-0 shadow-sm z-10">
+                                        <tr>
+                                            <th className="p-4 font-semibold border-b">วันที่ / JO</th>
+                                            <th className="p-4 font-semibold border-b">ข้อมูลลูกค้า</th>
+                                            <th className="p-4 font-semibold border-b w-1/3">รายการอะไหล่ (แบบละเอียด)</th>
+                                            <th className="p-4 font-semibold border-b text-center">ประเภท</th>
+                                            <th className="p-4 font-semibold border-b text-center">ชำระเงิน</th>
+                                            <th className="p-4 font-semibold border-b text-center">จัดการ</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-200 bg-white text-sm">
+                                        {items.map(order => (
+                                            <tr key={order.id} className="hover:bg-blue-50/50 transition">
+                                                <td className="p-4 align-top">
+                                                    <div className="font-bold text-gray-800">{order.jobOrder || '-'}</div>
+                                                    <div className="text-xs text-gray-500 mt-1">{formatDate(order.createdAt)}</div>
+                                                    {order.isVOR && <span className="mt-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-600">VOR</span>}
+                                                </td>
+                                                <td className="p-4 align-top">
+                                                    <div className="font-bold text-gray-900">{order.customerName}</div>
+                                                    <div className="text-xs text-gray-500">{order.licensePlate || '-'}</div>
+                                                    <div className="text-xs text-gray-400 mt-1"><Phone size={10} className="inline mr-1"/>{order.contactNumber}</div>
+                                                </td>
+                                                <td className="p-4 align-top">
+                                                    <div className="space-y-1.5">
+                                                        {(order.items || []).map((item, i) => (
+                                                            <div key={i} className="flex justify-between items-center text-sm border-b border-dashed border-gray-100 last:border-0 pb-1 last:pb-0">
+                                                                <div className="flex-1">
+                                                                    <span className="font-medium text-gray-700">{item.name}</span>
+                                                                    {item.partNumber && <span className="ml-2 text-xs text-blue-600 font-mono bg-blue-50 px-1 rounded">{item.partNumber}</span>}
+                                                                </div>
+                                                                <span className="font-bold text-gray-600 ml-2">x{item.quantity}</span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </td>
+                                                <td className="p-4 align-top text-center">
+                                                    {order.orderType === 'store' 
+                                                        ? <span className="text-[10px] font-bold bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full border border-indigo-200">หน้าร้าน</span> 
+                                                        : <span className="text-[10px] font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-full border border-gray-200">งานซ่อม</span>}
+                                                </td>
+                                                <td className="p-4 align-top text-center">
+                                                    <div className="flex flex-col items-center gap-1">
+                                                        <PaymentBadge status={order.paymentStatus} deposit={order.depositAmount} total={order.totalPrice} />
+                                                        {order.totalPrice && <div className="text-[10px] text-gray-400">ยอด: {formatMoney(order.totalPrice)}</div>}
+                                                    </div>
+                                                </td>
+                                                <td className="p-4 align-top text-center">
+                                                    <div className="flex flex-col gap-2 items-center">
+                                                        {statusKey !== 'completed' && (
+                                                            <button onClick={() => { onUpdateStatus(order.id, {pending:'ordered',ordered:'arrived',arrived:'contacted',contacted:'completed'}[statusKey]); }} className="w-full px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center justify-center gap-1 font-bold shadow-sm text-xs transition">
+                                                                ไปต่อ <ArrowRight size={12} />
+                                                            </button>
+                                                        )}
+                                                        <div className="flex gap-1 justify-center">
+                                                            <button onClick={() => { onClose(); onEdit(order); }} className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded border border-gray-200" title="แก้ไข"><Edit2 size={14}/></button>
+                                                            <button onClick={() => onPrint(order)} className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded border border-gray-200" title="พิมพ์"><Printer size={14}/></button>
+                                                            <button onClick={() => onDelete(order.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded border border-gray-200" title="ลบ"><Trash2 size={14}/></button>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // --- KANBAN CARD COMPONENT ---
         const KanbanCard = memo(({ order, statusKey, onUpdateStatus, onDelete, onEdit, onPrint, onCopy, getVisibility, compactMode }) => {
             const [expanded, setExpanded] = useState(false);
             const { isVisible, timeLeft } = getVisibility(order);
@@ -208,6 +301,9 @@
             const [formData, setFormData] = useState({ customerName: '', licensePlate: '', contactNumber: '', jobOrder: '', requesterName: '', appointmentDate: '', isVOR: false, items: [], orderType: 'job', paymentStatus: 'unpaid', totalPrice: '', depositAmount: '' });
             const [tempItem, setTempItem] = useState({ name: '', partNumber: '', quantity: 1 });
 
+            // Expanded Status State
+            const [expandedStatus, setExpandedStatus] = useState(null); // 'pending', 'ordered', etc.
+
             // Catalog & Print States
             const [showCatalogForm, setShowCatalogForm] = useState(false);
             const [catalogFormData, setCatalogFormData] = useState({ partNumber: '', name: '', price: '', category: '' });
@@ -220,7 +316,7 @@
             
             // Voice Input State
             const [isListening, setIsListening] = useState(false);
-            const [voiceTarget, setVoiceTarget] = useState(null); // 'search' or 'item'
+            const [voiceTarget, setVoiceTarget] = useState(null); 
 
             // Refs
             const streamRef = useRef(null); 
@@ -278,7 +374,7 @@
                     return;
                 }
                 const recognition = new window.webkitSpeechRecognition();
-                recognition.lang = 'th-TH'; // Thai Language
+                recognition.lang = 'th-TH'; 
                 recognition.continuous = false;
                 recognition.interimResults = false;
 
@@ -314,7 +410,7 @@
                     o.depositAmount || '0'
                 ]);
 
-                let csvContent = "data:text/csv;charset=utf-8,\uFEFF" // UTF-8 BOM
+                let csvContent = "data:text/csv;charset=utf-8,\uFEFF" 
                     + headers.join(",") + "\n" 
                     + rows.map(e => e.map(cell => `"${(cell + '').replace(/"/g, '""')}"`).join(",")).join("\n");
 
@@ -339,7 +435,6 @@
                 addNotification("คัดลอกข้อมูลแล้ว กรุณาตรวจสอบและบันทึก", "info");
             };
 
-            // ... (Rest of logic: OCR, CRUD - Same as previous version) ...
             const processScanResult = async (text) => {
                 const cleanText = text.replace(/[^a-zA-Z0-9]/g, ''); 
                 if (cleanText.length < 3) return; 
@@ -401,8 +496,17 @@
 
             const KanbanColumn = ({ title, statusKey, items, icon: Icon, colorClass }) => (
                 <div className="flex flex-col bg-gray-50 rounded-lg w-full md:w-[350px] md:min-w-[300px] md:h-full shrink-0 max-h-[500px] md:max-h-none shadow-sm">
-                    <div className={`p-3 rounded-t-lg font-bold text-sm flex items-center justify-between ${colorClass} text-white sticky top-0 z-10 shadow-sm`}>
-                        <div className="flex items-center gap-2"><Icon size={18} />{title}</div><span className="bg-white/20 px-2 py-0.5 rounded text-xs backdrop-blur-sm">{items.length}</span>
+                    {/* Header Clickable for Expand */}
+                    <div 
+                        className={`p-3 rounded-t-lg font-bold text-sm flex items-center justify-between ${colorClass} text-white sticky top-0 z-10 shadow-sm cursor-pointer hover:opacity-90 transition`}
+                        onClick={() => setExpandedStatus({ key: statusKey, title, items, colorClass })}
+                        title="คลิกเพื่อดูรายละเอียด"
+                    >
+                        <div className="flex items-center gap-2"><Icon size={18} />{title}</div>
+                        <div className="flex items-center gap-2">
+                            <span className="bg-white/20 px-2 py-0.5 rounded text-xs backdrop-blur-sm">{items.length}</span>
+                            <Maximize2 size={16} />
+                        </div>
                     </div>
                     <div className="p-2 overflow-y-auto flex-1 space-y-3 md:pb-20 min-h-[100px] custom-scrollbar">
                         {items.length === 0 ? <div className="text-center text-gray-300 text-xs mt-8 flex flex-col items-center"><Package size={24} className="mb-2 opacity-50"/>ไม่มีรายการ</div> : items.map(order => (
@@ -447,6 +551,21 @@
 
                     {/* Floating Action Button */}
                     <button onClick={() => openAddModal()} className="fixed bottom-6 right-6 bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-full shadow-xl flex items-center justify-center transition-all duration-300 z-50 fab-hover fab-active group no-print"><PlusCircle size={32} className="group-hover:rotate-90 transition-transform duration-300"/><span className="absolute -top-10 right-0 bg-gray-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">สั่งอะไหล่ใหม่</span></button>
+
+                    {/* New: Status Detail Modal */}
+                    {expandedStatus && (
+                        <StatusDetailModal 
+                            statusKey={expandedStatus.key}
+                            title={expandedStatus.title}
+                            items={expandedStatus.items}
+                            colorClass={expandedStatus.colorClass}
+                            onClose={() => setExpandedStatus(null)}
+                            onUpdateStatus={updateStatus}
+                            onDelete={deleteOrder}
+                            onEdit={openEditModal}
+                            onPrint={handlePrint}
+                        />
+                    )}
 
                     {/* Print Template, Catalog Modal (Same as before) */}
                     {printOrder && (<div className="print-only p-8 text-black"><div className="flex justify-between items-start mb-6 border-b pb-4"><div className="flex items-center gap-2"><div className="text-4xl text-blue-600"><Truck size={40}/></div><div><h1 className="text-2xl font-bold">ใบสั่งอะไหล่ / Parts Order</h1><p className="text-sm text-gray-500">Volvo Service Center</p></div></div><div className="text-right"><div className="font-bold text-xl">{printOrder.orderType === 'store' ? 'STORE ORDER' : 'JOB ORDER'}</div><div className="text-sm text-gray-500">{formatDate(printOrder.createdAt)}</div></div></div><div className="grid grid-cols-2 gap-8 mb-6"><div><h3 className="font-bold border-b mb-2">ข้อมูลลูกค้า (Customer)</h3><p><strong>ชื่อ:</strong> {printOrder.customerName}</p><p><strong>เบอร์โทร:</strong> {printOrder.contactNumber}</p>{printOrder.orderType === 'job' && <p><strong>ทะเบียน:</strong> {printOrder.licensePlate}</p>}</div><div><h3 className="font-bold border-b mb-2">ข้อมูลงาน (Job Details)</h3>{printOrder.orderType === 'job' && <p><strong>Job Order:</strong> {printOrder.jobOrder}</p>}<p><strong>ผู้สั่ง:</strong> {printOrder.requesterName}</p>{printOrder.isVOR && <p className="text-red-600 font-bold">** งานด่วน VOR **</p>}</div></div><div className="mb-6"><h3 className="font-bold border-b mb-2">รายการอะไหล่ (Items)</h3><table className="w-full text-left"><thead><tr className="border-b"><th className="py-2">ลำดับ</th><th className="py-2">รายการ</th><th className="py-2">P/N</th><th className="py-2 text-right">จำนวน</th></tr></thead><tbody>{printOrder.items.map((item, i) => (<tr key={i} className="border-b"><td className="py-2">{i+1}</td><td className="py-2">{item.name}</td><td className="py-2">{item.partNumber || '-'}</td><td className="py-2 text-right">{item.quantity}</td></tr>))}</tbody></table></div><div className="flex justify-end mt-8 border-t pt-4"><div className="text-right"><p>ลงชื่อผู้รับของ .......................................................</p><p className="mt-2 text-sm text-gray-500">วันที่ .......................................................</p></div></div></div>)}
