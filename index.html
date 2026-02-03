@@ -22,7 +22,8 @@
         }
     }
     </script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Babel Standalone (Pinned Version 7.23.6 to prevent errors) -->
+    <script src="https://unpkg.com/@babel/standalone@7.23.6/babel.min.js"></script>
 
     <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;700&display=swap" rel="stylesheet">
     <style>
@@ -51,6 +52,14 @@
         .ocr-video { width: 100%; height: 100%; object-fit: cover; }
         .ocr-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 80%; height: 15vh; border: 2px solid rgba(59, 130, 246, 0.8); border-radius: 8px; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6); pointer-events: none; z-index: 10; }
         .ocr-guide-text { position: absolute; top: 30%; left: 50%; transform: translateX(-50%); color: white; font-size: 0.9rem; text-shadow: 0 2px 4px rgba(0,0,0,0.8); z-index: 20; white-space: nowrap; }
+        
+        /* Voice Pulse Animation */
+        @keyframes pulse-red {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+        .animate-pulse-red { animation: pulse-red 1.5s infinite; }
     </style>
 </head>
 <body class="bg-gray-100 text-slate-800">
@@ -71,7 +80,8 @@
         };
     </script>
 
-    <script type="text/babel" data-type="module">
+    <!-- FIX: Added data-presets="react" to fix Babel transpilation issues -->
+    <script type="text/babel" data-type="module" data-presets="react">
         import React, { useState, useEffect, useRef, memo } from 'react';
         import ReactDOM from 'react-dom/client';
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
@@ -97,7 +107,7 @@
             storageBucket:"volvo-parts-tracker.firebasestorage.app",
             messagingSenderId:"747510265490",
             appId:"1:747510265490:web:0c959f86358f7b56b8184b",
-            measurementId: "G-BER1FQ9WJC"
+                        measurementId: "G-BER1FQ9WJC"
         };
         // ==========================================
 
@@ -132,7 +142,7 @@
             return total ? <span className="text-[10px] text-gray-400 font-medium">รอจ่าย: ฿{formatMoney(total)}</span> : null;
         };
 
-        // --- NEW: STATUS DETAIL MODAL ---
+        // --- STATUS DETAIL MODAL ---
         const StatusDetailModal = ({ statusKey, title, items, colorClass, onClose, onUpdateStatus, onDelete, onEdit, onPrint }) => {
             return (
                 <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[80] flex items-center justify-center p-4">
@@ -302,7 +312,7 @@
             const [tempItem, setTempItem] = useState({ name: '', partNumber: '', quantity: 1 });
 
             // Expanded Status State
-            const [expandedStatus, setExpandedStatus] = useState(null); // 'pending', 'ordered', etc.
+            const [expandedStatus, setExpandedStatus] = useState(null); 
 
             // Catalog & Print States
             const [showCatalogForm, setShowCatalogForm] = useState(false);
@@ -504,7 +514,7 @@
                     >
                         <div className="flex items-center gap-2"><Icon size={18} />{title}</div>
                         <div className="flex items-center gap-2">
-                            <span className="bg-white/20 px-2 py-0.5 rounded text-xs backdrop-blur-sm">{items.length}</span>
+                            <span className="bg-white/20 px-2 py-0.5 rounded-full text-sm backdrop-blur-sm">{items.length}</span>
                             <Maximize2 size={16} />
                         </div>
                     </div>
@@ -615,10 +625,19 @@
                     {showScanner && (
                         <div className="fixed inset-0 bg-black/95 z-[70] flex flex-col items-center justify-center p-0 md:p-4">
                             <div className="w-full h-full md:h-auto md:max-w-md bg-black md:bg-white rounded-none md:rounded-xl overflow-hidden shadow-2xl relative flex flex-col">
+                                
+                                {/* Header */}
                                 <div className="p-4 bg-slate-900 flex justify-between items-center text-white border-b border-slate-700 shrink-0">
-                                    <div className="flex items-center gap-2"><TextCursor size={20} className="text-blue-400"/><h3 className="font-bold text-lg">{scannerMode === 'input' ? 'สแกนตัวเลข P/N (OCR)' : 'โหมดรับของเข้า (OCR)'}</h3></div>
+                                    <div className="flex items-center gap-2">
+                                        <TextCursor size={20} className="text-blue-400"/>
+                                        <h3 className="font-bold text-lg">
+                                            {scannerMode === 'input' ? 'สแกนตัวเลข P/N (OCR)' : 'โหมดรับของเข้า (OCR)'}
+                                        </h3>
+                                    </div>
                                     <button onClick={closeScanner} className="bg-slate-800 p-2 rounded-full hover:bg-slate-700 text-gray-300 hover:text-white transition"><X size={20} /></button>
                                 </div>
+                                
+                                {/* Camera Viewport */}
                                 <div className="flex-1 bg-black relative flex items-center justify-center overflow-hidden">
                                     <div className="ocr-video-container"><video ref={videoRef} autoPlay playsInline muted className="ocr-video"></video><div className="ocr-overlay"></div><div className="ocr-guide-text">วางตัวเลขในกรอบสีฟ้า</div>{ocrProcessing && (<div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center text-white z-20 backdrop-blur-sm"><div className="animate-spin rounded-full h-10 w-10 border-4 border-blue-500 border-t-transparent mb-3"></div><span className="text-sm font-bold animate-pulse">กำลังอ่านตัวเลข...</span></div>)}</div>
                                 </div>
